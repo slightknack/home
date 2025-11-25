@@ -1,6 +1,7 @@
 //! IsoCore: Append-only Merkle DAG using covering tree indexing
 //!
 //! An IsoCore maintains two cores:
+//!
 //! - data_core: Stores actual message data
 //! - verkle_core: Stores tree structure (nodes)
 //!
@@ -205,19 +206,19 @@ fn parse_child_line(line: &str) -> Result<NodeChild, IsoCoreError> {
     if parts.len() != 3 {
         return Err(IsoCoreError::NodeFormat);
     }
-    
+
     let node_type = match parts[0] {
         "leaf" => NodeType::Leaf,
         "branch" => NodeType::Branch,
         _ => return Err(IsoCoreError::NodeType),
     };
-    
+
     let hash = Hash::from_hex(parts[1]);
     let index_str = parts[2].trim_end_matches(".bin");
     let index_num = u16::from_str_radix(index_str, 16)
         .map_err(|e| IsoCoreError::MessageIdParse(e))?;
     let index = MessageId(index_num);
-    
+
     return Ok(NodeChild {
         node_type,
         hash,
