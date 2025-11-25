@@ -1,11 +1,10 @@
-//! NeoCore: Append-only Merkle DAG using covering tree indexing
+//! IsoCore: Append-only Merkle DAG using covering tree indexing
 //!
-//! A NeoCore maintains two cores:
+//! An IsoCore maintains two cores:
 //! - data_core: Stores actual message data
 //! - verkle_core: Stores tree structure (nodes)
 //!
-//! Unlike ExoCore which uses a forest approach with base-8 carry,
-//! NeoCore uses the covering tree module to precisely calculate which
+//! IsoCore uses the covering tree module to precisely calculate which
 //! nodes need to be created when each item is added. This gives us:
 //!
 //! - O(1) space: No need to track a forest of roots
@@ -20,7 +19,7 @@ use crate::covering::{CoveringId, ItemId, coverings_for_item, children_for_cover
 const WIDTH: u64 = 8;
 
 #[derive(Debug)]
-pub enum NeoCoreError {
+pub enum IsoCoreError {
     Core(CoreError),
     Utf8,
     NodeFormat,
@@ -29,9 +28,9 @@ pub enum NeoCoreError {
     MessageIdParse(std::num::ParseIntError),
 }
 
-impl From<CoreError> for NeoCoreError {
+impl From<CoreError> for IsoCoreError {
     fn from(e: CoreError) -> Self {
-        return NeoCoreError::Core(e);
+        return IsoCoreError::Core(e);
     }
 }
 
@@ -77,9 +76,9 @@ impl VerkleNode {
         return out;
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, NeoCoreError> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, IsoCoreError> {
         let text = std::str::from_utf8(bytes)
-            .map_err(|_| NeoCoreError::Utf8)?;
+            .map_err(|_| IsoCoreError::Utf8)?;
 
         let mut lines = text.lines();
         lines.next();
@@ -102,13 +101,13 @@ impl VerkleNode {
 }
 
 #[derive(Debug)]
-pub struct NeoCore {
+pub struct IsoCore {
     pub data_core: Core,
     pub verkle_core: Core,
     pub size: u16,
 }
 
-impl NeoCore {
+impl IsoCore {
     pub fn create_mem() -> Self {
         return Self {
             data_core: Core::create_mem(),
@@ -128,7 +127,7 @@ impl NeoCore {
         };
     }
 
-    pub fn add_message(&mut self, message: &[u8]) -> Result<Hash, NeoCoreError> {
+    pub fn add_message(&mut self, message: &[u8]) -> Result<Hash, IsoCoreError> {
         let data_index = self.data_core.add_message(message)?;
         let msg_hash = hash(message);
 
@@ -147,7 +146,7 @@ impl NeoCore {
         return self.get_root_hash();
     }
 
-    fn build_node(&mut self, covering_id: CoveringId, leaf_hash: Hash, leaf_index: MessageId) -> Result<VerkleNode, NeoCoreError> {
+    fn build_node(&mut self, covering_id: CoveringId, leaf_hash: Hash, leaf_index: MessageId) -> Result<VerkleNode, IsoCoreError> {
         let children_ids = children_for_covering(covering_id, WIDTH);
 
         if children_ids.is_empty() {
@@ -179,7 +178,7 @@ impl NeoCore {
         return Ok(VerkleNode { children });
     }
 
-    fn get_root_hash(&mut self) -> Result<Hash, NeoCoreError> {
+    fn get_root_hash(&mut self) -> Result<Hash, IsoCoreError> {
         if self.size == 0 {
             return Ok(hash(&[]));
         }
@@ -201,22 +200,22 @@ impl NeoCore {
     }
 }
 
-fn parse_child_line(line: &str) -> Result<NodeChild, NeoCoreError> {
+fn parse_child_line(line: &str) -> Result<NodeChild, IsoCoreError> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() != 3 {
-        return Err(NeoCoreError::NodeFormat);
+        return Err(IsoCoreError::NodeFormat);
     }
     
     let node_type = match parts[0] {
         "leaf" => NodeType::Leaf,
         "branch" => NodeType::Branch,
-        _ => return Err(NeoCoreError::NodeType),
+        _ => return Err(IsoCoreError::NodeType),
     };
     
     let hash = Hash::from_hex(parts[1]);
     let index_str = parts[2].trim_end_matches(".bin");
     let index_num = u16::from_str_radix(index_str, 16)
-        .map_err(|e| NeoCoreError::MessageIdParse(e))?;
+        .map_err(|e| IsoCoreError::MessageIdParse(e))?;
     let index = MessageId(index_num);
     
     return Ok(NodeChild {
