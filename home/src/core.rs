@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
 
-const CORE_INFO: &'static str = "core.info";
+const INFO_CORE: &'static str = "core.info";
 
 #[derive(Debug)]
 pub enum CoreError {
@@ -68,7 +68,7 @@ impl Core {
 
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, CoreError>  {
         let path = path.as_ref();
-        let core_info = path.join(CORE_INFO);
+        let core_info = path.join(INFO_CORE);
         let size = std::fs::read_to_string(core_info).map_err(|e| CoreError::Io(e))?;
         let size = u16::from_str_radix(&size.trim(), 10).map_err(|e| CoreError::CoreInfoInvalid(e))?;
 
@@ -95,7 +95,7 @@ impl Core {
         }
 
         let size = self.next_id.0;
-        let mut core_info = std::fs::File::create(path.join(CORE_INFO))
+        let mut core_info = std::fs::File::create(path.join(INFO_CORE))
             .map_err(|e| CoreError::Io(e))?;
         core_info.write_all(size.to_string().as_bytes())
             .map_err(|e| CoreError::Io(e))?;

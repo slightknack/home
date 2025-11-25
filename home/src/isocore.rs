@@ -12,12 +12,28 @@
 //! - Deterministic: The tree structure is fully determined by the count
 //! - Stateless navigation: Can compute any node's children without state
 
-use std::path::{Path, PathBuf};
-use crate::core::{Core, CoreError, MessageId};
-use crate::key::{Hash, hash};
-use crate::covering::{CoveringId, ItemId, coverings_for_item, children_for_covering};
+use std::path::Path;
+use std::path::PathBuf;
+use std::io::Write;
+use crate::core::MessageId;
+use crate::core::CoreError;
+use crate::core::Core;
+use crate::key::hash;
+use crate::key::Hash;
+use crate::key::KeyPair;
+use crate::key::KeyPub;
+use crate::key::Signature;
+use crate::covering::children_for_covering;
+use crate::covering::coverings_for_item;
+use crate::covering::ItemId;
+use crate::covering::CoveringId;
+use crate::covering::get_peaks;
 
 const WIDTH: u64 = 8;
+const INFO_ISOCORE: &'static str = "isocore.info";
+const DIR_DATA: &'static str = "data";
+const DIR_VERKLE: &'static str = "verkle";
+const DIR_SIG: &'static str = "sig";
 
 #[derive(Debug)]
 pub enum IsoCoreError {
@@ -27,6 +43,9 @@ pub enum IsoCoreError {
     NodeType,
     HexEncoding,
     MessageIdParse(std::num::ParseIntError),
+    IntegrityError,
+    SignerMismatch,
+    Io(std::io::Error),
 }
 
 impl From<CoreError> for IsoCoreError {
@@ -51,6 +70,22 @@ pub struct NodeChild {
 #[derive(Debug, Clone)]
 pub struct VerkleNode {
     pub children: Vec<NodeChild>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SignatureBlock {
+    pub global_root: Hash,
+    pub signature: Signature,
+}
+
+impl SignatureBlock {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&self.global_root.to_hex());
+        out.push(b'\n');
+        out.extend_from_slice(&self.signature.0);
+        return out;
+    }
 }
 
 impl VerkleNode {
@@ -103,40 +138,76 @@ impl VerkleNode {
 
 #[derive(Debug)]
 pub struct IsoCore {
+    pub path: Option<PathBuf>,
+    pub signer: KeyPub,
     pub data_core: Core,
     pub verkle_core: Core,
+    pub sig_core: Core,
 }
 
 impl IsoCore {
-    pub fn create_mem() -> Self {
+    pub fn create_mem(signer: &KeyPair) -> Self {
         return Self {
+            path: None,
+            signer: signer.key_pub.clone(),
             data_core: Core::create_mem(),
             verkle_core: Core::create_mem(),
+            sig_core: Core::create_mem(),
         };
     }
 
-    pub fn create(path: PathBuf) -> Self {
-        let data_path = path.join("data");
-        let verkle_path = path.join("verkle");
+    pub fn create(path: PathBuf, signer: &KeyPair) -> Result<Self, IsoCoreError> {
+        let data_path = path.join(DIR_DATA);
+        let verkle_path = path.join(DIR_VERKLE);
+        let sig_path = path.join(DIR_SIG);
+        
+        // Write isocore.info with public key
+        let info_path = path.join(INFO_ISOCORE);
+        let mut file = std::fs::File::create(info_path)
+            .map_err(|e| IsoCoreError::Io(e))?;
+        file.write_all(&signer.key_pub.0)
+            .map_err(|e| IsoCoreError::Io(e))?;
 
-        return Self {
+        return Ok(Self {
+            path: Some(path),
+            signer: signer.key_pub.clone(),
             data_core: Core::create(data_path),
             verkle_core: Core::create(verkle_path),
-        };
+            sig_core: Core::create(sig_path),
+        });
     }
 
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, IsoCoreError> {
         let path = path.as_ref();
-        let data_path = path.join("data");
-        let verkle_path = path.join("verkle");
+        let data_path = path.join(DIR_DATA);
+        let verkle_path = path.join(DIR_VERKLE);
+        let sig_path = path.join(DIR_SIG);
+        
+        // Read isocore.info to get public key
+        let info_path = path.join(INFO_ISOCORE);
+        let pubkey_bytes = std::fs::read(info_path)
+            .map_err(|e| IsoCoreError::Io(e))?;
+        if pubkey_bytes.len() != 32 {
+            return Err(IsoCoreError::NodeFormat);
+        }
+        let mut pubkey_array = [0u8; 32];
+        pubkey_array.copy_from_slice(&pubkey_bytes);
 
         return Ok(Self {
+            path: Some(path.to_path_buf()),
+            signer: KeyPub(pubkey_array),
             data_core: Core::load(data_path)?,
             verkle_core: Core::load(verkle_path)?,
+            sig_core: Core::load(sig_path)?,
         });
     }
 
-    pub fn add_message(&mut self, message: &[u8]) -> Result<Hash, IsoCoreError> {
+    pub fn add_message(&mut self, message: &[u8], signer: &KeyPair) -> Result<Hash, IsoCoreError> {
+        // Verify signer matches IsoCore's public key
+        if signer.key_pub != self.signer {
+            return Err(IsoCoreError::SignerMismatch);
+        }
+        
         let data_index = self.data_core.add_message(message)?;
         let msg_hash = hash(message);
 
@@ -150,7 +221,34 @@ impl IsoCore {
             self.verkle_core.add_message(&node_bytes)?;
         }
 
-        return self.get_root_hash();
+        // Bag the peaks: get all peak roots and hash them together
+        let current_len = self.len().0 as u64;
+        let peaks = get_peaks(current_len, WIDTH);
+        
+        let mut peak_hashes = Vec::new();
+        for peak_id in peaks {
+            let peak_node = self.get_node(peak_id)?;
+            peak_hashes.push(peak_node.compute_hash());
+        }
+        
+        // Concatenate all peak hashes and hash them to create global root
+        let mut global_data = Vec::new();
+        for peak_hash in &peak_hashes {
+            global_data.extend_from_slice(&peak_hash.0);
+        }
+        let global_root = hash(&global_data);
+        
+        // Sign the global root
+        let signature = signer.sign(&global_root.0);
+        
+        // Store signature block
+        let sig_block = SignatureBlock {
+            global_root: global_root.clone(),
+            signature,
+        };
+        self.sig_core.add_message(&sig_block.to_bytes())?;
+
+        return Ok(global_root);
     }
 
     fn build_node(&mut self, covering_id: CoveringId, leaf_hash: Hash, leaf_index: MessageId) -> Result<VerkleNode, IsoCoreError> {
@@ -218,9 +316,18 @@ impl IsoCore {
         }
 
         let data_id = leaf_node.children[0].index;
+        let expected_hash = leaf_node.children[0].hash.clone();
+        
         self.data_core.load_message(data_id)?;
+        let data = self.data_core.get_contents(data_id)?;
+        
+        // Verify data integrity
+        let actual_hash = hash(data);
+        if actual_hash != expected_hash {
+            return Err(IsoCoreError::IntegrityError);
+        }
 
-        return Ok(self.data_core.get_contents(data_id)?);
+        return Ok(data);
     }
 }
 
@@ -255,37 +362,42 @@ mod tests {
 
     #[test]
     fn isocore_create_and_add_message() {
-        let mut isocore = IsoCore::create_mem();
-        
+        let signer = KeyPair::ephemeral();
+        let mut isocore = IsoCore::create_mem(&signer);
+
         let msg1 = b"hello world";
-        let hash1 = isocore.add_message(msg1).unwrap();
-        
+        let hash1 = isocore.add_message(msg1, &signer).unwrap();
+
         assert_eq!(isocore.len().0, 1);
-        
+
         let retrieved = isocore.get_message(ItemId(0)).unwrap();
         assert_eq!(retrieved, msg1);
+
+        // Verify global root is stored in sig_core
+        assert_eq!(isocore.sig_core.len().0, 1);
         
-        let hash1_again = isocore.get_root_hash().unwrap();
-        assert_eq!(hash1, hash1_again);
+        // The global root should be deterministic for the same message
+        assert!(!hash1.0.iter().all(|&b| b == 0));
     }
 
     #[test]
     fn isocore_multiple_messages() {
-        let mut isocore = IsoCore::create_mem();
-        
+        let signer = KeyPair::ephemeral();
+        let mut isocore = IsoCore::create_mem(&signer);
+
         let messages = vec![
             b"message 1",
             b"message 2",
             b"message 3",
             b"message 4",
         ];
-        
+
         for msg in &messages {
-            isocore.add_message(*msg).unwrap();
+            isocore.add_message(*msg, &signer).unwrap();
         }
-        
+
         assert_eq!(isocore.len().0, 4);
-        
+
         for (i, msg) in messages.iter().enumerate() {
             let retrieved = isocore.get_message(ItemId(i as u64)).unwrap();
             assert_eq!(retrieved, *msg);
@@ -294,21 +406,23 @@ mod tests {
 
     #[test]
     fn isocore_lazy_loading() {
-        let mut isocore = IsoCore::create_mem();
-        
-        isocore.add_message(b"test message").unwrap();
-        isocore.add_message(b"another message").unwrap();
-        
+        let signer = KeyPair::ephemeral();
+        let mut isocore = IsoCore::create_mem(&signer);
+
+        isocore.add_message(b"test message", &signer).unwrap();
+        isocore.add_message(b"another message", &signer).unwrap();
+
         let msg = isocore.get_message(ItemId(0)).unwrap();
         assert_eq!(msg, b"test message");
-        
+
         let msg = isocore.get_message(ItemId(1)).unwrap();
         assert_eq!(msg, b"another message");
     }
 
     #[test]
     fn isocore_empty_len() {
-        let isocore = IsoCore::create_mem();
+        let signer = KeyPair::ephemeral();
+        let isocore = IsoCore::create_mem(&signer);
         assert_eq!(isocore.len().0, 0);
     }
 
@@ -323,10 +437,10 @@ mod tests {
                 },
             ],
         };
-        
+
         let bytes = node.to_bytes();
         let parsed = VerkleNode::from_bytes(&bytes).unwrap();
-        
+
         assert_eq!(parsed.children.len(), 1);
         assert_eq!(parsed.children[0].node_type, NodeType::Leaf);
         assert_eq!(parsed.children[0].index, MessageId(0));

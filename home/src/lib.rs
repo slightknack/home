@@ -1,3 +1,4 @@
+pub mod isopack;
 pub mod core;
 pub mod key;
 pub mod covering;

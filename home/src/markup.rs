@@ -20,6 +20,43 @@ pub struct Frag {
     pub frags: Vec<(Style, String)>,
 }
 
+fn process_char(
+    c: u8,
+    rem: &[u8],
+    index: &mut usize,
+    buffer: &mut Vec<u8>,
+    style: &mut Style,
+    frags: &mut Vec<(Style, String)>,
+) -> bool {
+    match c {
+        b'\n' => return true, // Signal to break
+        b'\\' => {
+            // Escape: skip backslash and append next char literally
+            *index += 1;
+            if *index < rem.len() {
+                buffer.push(rem[*index]);
+            }
+        }
+        b'*' => {
+            // Push current buffer if non-empty
+            if !buffer.is_empty() {
+                let contents = String::from_utf8(buffer.clone()).unwrap();
+                frags.push((*style, contents));
+                buffer.clear();
+            }
+            // Toggle style
+            *style = match *style {
+                Style::Normal => Style::Bold,
+                Style::Bold => Style::Normal,
+            };
+        }
+        _ => {
+            buffer.push(c);
+        }
+    }
+    return false;
+}
+
 /// Parse the next fragment.
 /// Filters out empty fragments, like `**` in `race**car`.
 /// Does not merge together like fragments after filtering, though!
@@ -27,41 +64,22 @@ pub fn parse_frag(rem: &[u8]) -> (Frag, &[u8]) {
     let rem = rem.trim_ascii_start();
     let mut frags = Vec::new();
     let mut style = Style::Normal;
-    let mut start = 0;
+    let mut buffer = Vec::new();
     let mut index = 0;
 
-    let prune = |r: &[u8], s, i| {
-        // filter out backslash escapes
-        let filtered = r[s..i].iter()
-            .filter(|&c| *c != b'\\').map(|c| *c).collect::<Vec<_>>();
-        String::from_utf8(filtered).unwrap()
-    };
-
     while index < rem.len() {
-        match (rem[index], style) {
-            (b'\n', _) => break,
-            (b'\\', _) => index += 1, // skip the next character
-            (b'*', Style::Bold) => {
-                let contents = prune(rem, start, index);
-                frags.push((style, contents));
-                style = Style::Normal;
-                start = index + 1;
-            }
-            (b'*', _) => {
-                let contents = prune(rem, start, index);
-                frags.push((style, contents));
-                style = Style::Bold;
-                start = index + 1;
-            }
-            _ => {}
+        let c = rem[index];
+        if process_char(c, rem, &mut index, &mut buffer, &mut style, &mut frags) {
+            break;
         }
         index += 1;
     }
 
-    // TODO: trim whitespace off end of string?
-    let contents = prune(rem, start, index);
-    frags.push((style, contents));
-    frags.retain(|(_, contents)| !contents.is_empty());
+    // Push remaining buffer
+    if !buffer.is_empty() {
+        let contents = String::from_utf8(buffer).unwrap();
+        frags.push((style, contents));
+    }
 
     return (Frag { frags }, &rem[index..]);
 }

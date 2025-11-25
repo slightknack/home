@@ -1,1 +1,6 @@
+**/.*
+!.gitignore
+!.zed
+
+cores
 **/target

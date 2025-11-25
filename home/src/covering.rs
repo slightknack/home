@@ -163,6 +163,33 @@ pub fn children_for_covering(y: CoveringId, width: u64) -> Vec<CoveringId> {
     }).collect();
 }
 
+/// Returns the root CoveringIds for all complete subtrees (peaks) in a forest of n items.
+/// Decomposes n into powers of width to find each peak.
+pub fn get_peaks(n: u64, width: u64) -> Vec<CoveringId> {
+    assert!(width > 1 && width.is_power_of_two());
+    
+    let mut peaks = Vec::new();
+    let mut remaining = n;
+    let mut position = 0u64;
+    
+    while remaining > 0 {
+        // Find largest power: size = width^k where width^k <= remaining
+        let mut size = 1u64;
+        while size * width <= remaining {
+            size *= width;
+        }
+        
+        // Get root covering for subtree ending at (position + size - 1)
+        let coverings = coverings_for_item(ItemId(position + size - 1), width);
+        peaks.push(coverings.root());
+        
+        position += size;
+        remaining -= size;
+    }
+    
+    return peaks;
+}
+
 fn map_item_to_covering(n: u64, w: u64) -> u64 {
     let mut offset = 0;
     let mut div = w;
@@ -234,5 +261,34 @@ mod tests {
 
         let c1 = children_for_covering(CoveringId(4), 4);
         assert_eq!(c1, vec![CoveringId(0), CoveringId(1), CoveringId(2), CoveringId(3)]);
+    }
+
+    #[test]
+    fn peaks() {
+        // 0 items = no peaks
+        assert_eq!(get_peaks(0, 8), vec![]);
+        
+        // 1 item = 1 peak (single leaf)
+        assert_eq!(get_peaks(1, 8), vec![CoveringId(0)]);
+        
+        // 7 items = 7 peaks (all separate leaves)
+        assert_eq!(get_peaks(7, 8), vec![
+            CoveringId(0), CoveringId(1), CoveringId(2), CoveringId(3),
+            CoveringId(4), CoveringId(5), CoveringId(6)
+        ]);
+        
+        // 8 items = 1 peak (root of perfect tree)
+        assert_eq!(get_peaks(8, 8), vec![CoveringId(8)]);
+        
+        // 9 items = 2 peaks (8-tree + 1-tree)
+        assert_eq!(get_peaks(9, 8), vec![CoveringId(8), CoveringId(9)]);
+        
+        // 16 items = 2 peaks (8-tree + 8-tree)
+        assert_eq!(get_peaks(16, 8), vec![CoveringId(8), CoveringId(17)]);
+        
+        // 64 items = 1 peak (root of perfect tree with height 2: 8^2 = 64)
+        let peaks_64 = get_peaks(64, 8);
+        assert_eq!(peaks_64.len(), 1);
+        println!("Peak for 64 items: {:?}", peaks_64);
     }
 }
