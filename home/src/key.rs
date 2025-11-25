@@ -33,6 +33,23 @@ pub struct KeyPair {
 #[derive(Clone, PartialEq, Eq)]
 pub struct Hash(pub [u8; 32]);
 
+impl Hash {
+    pub fn to_hex(&self) -> Vec<u8> {
+        return self.0.iter()
+            .flat_map(|b| format!("{:02x}", b).into_bytes())
+            .collect();
+    }
+
+    pub fn from_hex(s: &str) -> Self {
+        let mut result = [0u8; 32];
+        for i in 0..32 {
+            let byte_str = &s[i * 2..i * 2 + 2];
+            result[i] = u8::from_str_radix(byte_str, 16).unwrap_or(0);
+        }
+        return Hash(result);
+    }
+}
+
 impl std::fmt::Debug for KeyPub {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "KeyPub({})", hex(&self.0))

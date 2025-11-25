@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::collections::BTreeMap;
 
 use crate::core::Core;
 use crate::key::Hash;
@@ -66,7 +67,7 @@ impl Verkle {
     pub fn new() -> Self {
         Verkle {
             root: hash(&[]),
-            nodes: Vec::new(),
+            nodes: BTreeMap::new(),
             subtrees: Vec::new(),
             size: 0,
         }
@@ -78,6 +79,6 @@ impl Verkle {
 
     /// Adds a message to the Verkle Tree, and returns the updated root hash
     pub fn add_message(&mut self, hash: Hash) -> Hash {
-
+        return hash;
     }
 }
