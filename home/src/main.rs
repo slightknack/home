@@ -1,12 +1,20 @@
-use home::core::MessageId;
-use home::core::Core;
+use home::isocore::IsoCore;
+use std::path::PathBuf;
 
 pub fn main() {
-    let mut core = Core::load("../cores/demo").unwrap();
-    dbg!(&core);
-    core.load_message(MessageId(0)).unwrap();
-    core.load_message(MessageId(1)).unwrap();
-    let id = core.add_message(b"all your base are belong to us").unwrap();
-    core.flush().unwrap();
-    dbg!(&core);
+    let path = PathBuf::from("../cores/test");
+    let mut isocore = IsoCore::create(path);
+
+    for i in 0..64 {
+        let message = format!("message {}", i);
+        let hash = isocore.add_message(message.as_bytes()).unwrap();
+        let hex_bytes = hash.to_hex();
+        let hex = String::from_utf8_lossy(&hex_bytes);
+        println!("Added message {}: {}", i, hex);
+    }
+
+    isocore.data_core.flush().unwrap();
+    isocore.verkle_core.flush().unwrap();
+
+    println!("\nTotal messages: {}", isocore.len().0);
 }

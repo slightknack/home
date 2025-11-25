@@ -87,8 +87,8 @@ use std::ops::Range;
 pub struct CoveringId(pub u64);
 
 impl CoveringId {
-    pub fn to_u16(&self) -> u16 {
-        return self.0 as u16;
+    pub fn to_verkle_id(&self) -> crate::core::MessageId {
+        return crate::core::MessageId(self.0 as u16);
     }
 }
 
@@ -96,8 +96,8 @@ impl CoveringId {
 pub struct ItemId(pub u64);
 
 impl ItemId {
-    pub fn to_u16(&self) -> u16 {
-        return self.0 as u16;
+    pub fn to_data_id(&self) -> crate::core::MessageId {
+        return crate::core::MessageId(self.0 as u16);
     }
 }
 

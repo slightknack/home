@@ -140,7 +140,7 @@ impl IsoCore {
         let data_index = self.data_core.add_message(message)?;
         let msg_hash = hash(message);
 
-        let item_id = ItemId(self.len().0 as u64);
+        let item_id = ItemId((self.len().0 - 1) as u64);
         let coverings = coverings_for_item(item_id, WIDTH);
 
         for covering_id_val in coverings.range().start.0..coverings.range().end.0 {
@@ -172,7 +172,7 @@ impl IsoCore {
             children.push(NodeChild {
                 node_type: NodeType::Branch,
                 hash: child_node.compute_hash(),
-                index: MessageId(child_id.to_u16()),
+                index: child_id.to_verkle_id(),
             });
         }
 
@@ -197,14 +197,14 @@ impl IsoCore {
     }
 
     fn load_node(&mut self, covering_id: CoveringId) -> Result<(), IsoCoreError> {
-        let verkle_id = MessageId(covering_id.to_u16());
+        let verkle_id = covering_id.to_verkle_id();
         self.verkle_core.load_message(verkle_id)?;
         return Ok(());
     }
 
     fn get_node(&mut self, covering_id: CoveringId) -> Result<VerkleNode, IsoCoreError> {
         self.load_node(covering_id)?;
-        let verkle_id = MessageId(covering_id.to_u16());
+        let verkle_id = covering_id.to_verkle_id();
         let bytes = self.verkle_core.get_contents(verkle_id)?;
         return VerkleNode::from_bytes(bytes);
     }
