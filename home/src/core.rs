@@ -18,6 +18,24 @@ pub enum CoreError {
     CoreInfoInvalid(std::num::ParseIntError),
 }
 
+#[derive(Debug, Clone)]pub struct Message(Range<usize>);
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct MessageId(pub u16);
+
+impl MessageId {
+    pub const FULL: MessageId = MessageId(0xFFFF);
+
+    pub fn is_full(&self) -> bool {
+        self.0 == 0xFFFF
+    }
+
+    pub fn to_file_name(&self) -> String {
+        format!("{:04x}.bin", self.0)
+    }
+}
+
 #[derive(Debug)]
 pub struct Core {
     pub path: Option<PathBuf>,
@@ -69,16 +87,11 @@ impl Core {
 
         // Flush out all messages
         for (id, message) in self.messages.range(start_id..) {
-            match message {
-                Message::NotCached => return Err(CoreError::NotCached),
-                Message::Cached(range) => {
-                    let name = id.to_file_name();
-                    let mut file = std::fs::File::create(path.join(name))
-                        .map_err(|e| CoreError::Io(e))?;
-                    file.write_all(&self.cache[range.clone()])
-                        .map_err(|e| CoreError::Io(e))?;
-                }
-            }
+            let name = id.to_file_name();
+            let mut file = std::fs::File::create(path.join(name))
+                .map_err(|e| CoreError::Io(e))?;
+            file.write_all(&self.cache[message.0.clone()])
+                .map_err(|e| CoreError::Io(e))?;
         }
 
         let size = self.next_id.0;
@@ -103,19 +116,19 @@ impl Core {
         }
     }
 
-    fn cache_contents(&mut self, id: MessageId, contents: &[u8]) -> Result<(), CoreError> {
+    fn cache_message(&mut self, id: MessageId, contents: &[u8]) -> Result<(), CoreError> {
         self.check_future_message(id)?;
         if self.messages.contains_key(&id) { return Err(CoreError::AlreadyCached); }
 
         self.cache.extend_from_slice(contents);
         let range = self.cache.len() - contents.len()..self.cache.len();
-        self.messages.insert(id, Message::Cached(range));
+        self.messages.insert(id, Message(range));
         Ok(())
     }
 
     pub fn load_message(&mut self, id: MessageId) -> Result<(), CoreError> {
         self.check_future_message(id)?;
-        if self.messages.contains_key(&id) { return Err(CoreError::AlreadyCached); }
+        if self.messages.contains_key(&id) { return Ok(()); }
 
         // No-op if we're using an in-memory store
         let Some(ref path) = self.path else { return Ok(()) };
@@ -123,7 +136,7 @@ impl Core {
         let name = id.to_file_name();
         let contents = std::fs::read(path.join(name))
             .map_err(|e| CoreError::Io(e))?;
-        self.cache_contents(id, &contents)?;
+        self.cache_message(id, &contents)?;
         Ok(())
     }
 
@@ -131,47 +144,16 @@ impl Core {
         if self.next_id.is_full() { return Err(CoreError::CoreFull); }
         let id = self.next_id;
         self.next_id = MessageId(id.0.saturating_add(1).min(0xFFFF));
-        self.cache_contents(id, contents)?;
+        self.cache_message(id, contents)?;
         Ok(id)
-    }
-
-    fn get_message(&mut self, id: MessageId) -> Result<Message, CoreError> {
-        self.check_future_message(id)?;
-        match self.messages.get(&id) {
-            Some(m) => Ok(m.clone()),
-            None => {
-                self.messages.insert(id, Message::NotCached);
-                Ok(Message::NotCached)
-            }
-        }
     }
 
     pub fn get_contents(&mut self, id: MessageId) -> Result<&[u8], CoreError> {
         self.check_future_message(id)?;
-        match self.get_message(id)? {
-            Message::Cached(range) => Ok(&self.cache[range]),
-            Message::NotCached => Err(CoreError::NotCached),
+        self.load_message(id)?;
+        match self.messages.get(&id) {
+            Some(message) => Ok(&self.cache[message.0.clone()]),
+            None => Err(CoreError::NotCached),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct MessageId(pub u16);
-
-impl MessageId {
-    pub const FULL: MessageId = MessageId(0xFFFF);
-
-    pub fn is_full(&self) -> bool {
-        self.0 == 0xFFFF
-    }
-
-    pub fn to_file_name(&self) -> String {
-        format!("{:04x}.bin", self.0)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum Message {
-    Cached(Range<usize>),
-    NotCached,
 }

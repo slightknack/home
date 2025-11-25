@@ -12,7 +12,7 @@
 //! - Deterministic: The tree structure is fully determined by the count
 //! - Stateless navigation: Can compute any node's children without state
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use crate::core::{Core, CoreError, MessageId};
 use crate::key::{Hash, hash};
 use crate::covering::{CoveringId, ItemId, coverings_for_item, children_for_covering};
@@ -105,7 +105,6 @@ impl VerkleNode {
 pub struct IsoCore {
     pub data_core: Core,
     pub verkle_core: Core,
-    pub size: u16,
 }
 
 impl IsoCore {
@@ -113,7 +112,6 @@ impl IsoCore {
         return Self {
             data_core: Core::create_mem(),
             verkle_core: Core::create_mem(),
-            size: 0,
         };
     }
 
@@ -124,25 +122,33 @@ impl IsoCore {
         return Self {
             data_core: Core::create(data_path),
             verkle_core: Core::create(verkle_path),
-            size: 0,
         };
+    }
+
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, IsoCoreError> {
+        let path = path.as_ref();
+        let data_path = path.join("data");
+        let verkle_path = path.join("verkle");
+
+        return Ok(Self {
+            data_core: Core::load(data_path)?,
+            verkle_core: Core::load(verkle_path)?,
+        });
     }
 
     pub fn add_message(&mut self, message: &[u8]) -> Result<Hash, IsoCoreError> {
         let data_index = self.data_core.add_message(message)?;
         let msg_hash = hash(message);
 
-        let item_id = ItemId(self.size as u64);
-        let covering_range = coverings_for_item(item_id, WIDTH);
+        let item_id = ItemId(self.len().0 as u64);
+        let coverings = coverings_for_item(item_id, WIDTH);
 
-        for covering_id in covering_range.start.0..covering_range.end.0 {
-            let covering_id = CoveringId(covering_id);
+        for covering_id_val in coverings.range().start.0..coverings.range().end.0 {
+            let covering_id = CoveringId(covering_id_val);
             let node = self.build_node(covering_id, msg_hash.clone(), data_index)?;
             let node_bytes = node.to_bytes();
             self.verkle_core.add_message(&node_bytes)?;
         }
-
-        self.size += 1;
 
         return self.get_root_hash();
     }
@@ -161,18 +167,12 @@ impl IsoCore {
         }
 
         let mut children = Vec::new();
-        for child_covering_id in children_ids {
-            let child_verkle_id = MessageId(child_covering_id.0 as u16);
-
-            self.verkle_core.load_message(child_verkle_id)?;
-            let child_bytes = self.verkle_core.get_contents(child_verkle_id)?;
-            let child_node = VerkleNode::from_bytes(child_bytes)?;
-            let child_hash = child_node.compute_hash();
-
+        for child_id in children_ids {
+            let child_node = self.get_node(child_id)?;
             children.push(NodeChild {
                 node_type: NodeType::Branch,
-                hash: child_hash,
-                index: child_verkle_id,
+                hash: child_node.compute_hash(),
+                index: MessageId(child_id.to_u16()),
             });
         }
 
@@ -180,24 +180,47 @@ impl IsoCore {
     }
 
     fn get_root_hash(&mut self) -> Result<Hash, IsoCoreError> {
-        if self.size == 0 {
+        let len = self.len();
+        if len.0 == 0 {
             return Ok(hash(&[]));
         }
 
-        let last_item = ItemId((self.size - 1) as u64);
-        let covering_range = coverings_for_item(last_item, WIDTH);
-        let root_covering = CoveringId(covering_range.end.0 - 1);
-        let root_verkle = MessageId(root_covering.0 as u16);
-
-        self.verkle_core.load_message(root_verkle)?;
-        let root_bytes = self.verkle_core.get_contents(root_verkle)?;
-        let root_node = VerkleNode::from_bytes(root_bytes)?;
+        let last_item = ItemId((len.0 - 1) as u64);
+        let coverings = coverings_for_item(last_item, WIDTH);
+        let root_node = self.get_node(coverings.root())?;
 
         return Ok(root_node.compute_hash());
     }
 
-    pub fn len(&self) -> u16 {
-        return self.size;
+    pub fn len(&self) -> MessageId {
+        return self.data_core.len();
+    }
+
+    fn load_node(&mut self, covering_id: CoveringId) -> Result<(), IsoCoreError> {
+        let verkle_id = MessageId(covering_id.to_u16());
+        self.verkle_core.load_message(verkle_id)?;
+        return Ok(());
+    }
+
+    fn get_node(&mut self, covering_id: CoveringId) -> Result<VerkleNode, IsoCoreError> {
+        self.load_node(covering_id)?;
+        let verkle_id = MessageId(covering_id.to_u16());
+        let bytes = self.verkle_core.get_contents(verkle_id)?;
+        return VerkleNode::from_bytes(bytes);
+    }
+
+    pub fn get_message(&mut self, item_id: ItemId) -> Result<&[u8], IsoCoreError> {
+        let coverings = coverings_for_item(item_id, WIDTH);
+        let leaf_node = self.get_node(coverings.leaf())?;
+
+        if leaf_node.children.len() != 1 || leaf_node.children[0].node_type != NodeType::Leaf {
+            return Err(IsoCoreError::NodeFormat);
+        }
+
+        let data_id = leaf_node.children[0].index;
+        self.data_core.load_message(data_id)?;
+
+        return Ok(self.data_core.get_contents(data_id)?);
     }
 }
 
@@ -224,4 +247,88 @@ fn parse_child_line(line: &str) -> Result<NodeChild, IsoCoreError> {
         hash,
         index,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn isocore_create_and_add_message() {
+        let mut isocore = IsoCore::create_mem();
+        
+        let msg1 = b"hello world";
+        let hash1 = isocore.add_message(msg1).unwrap();
+        
+        assert_eq!(isocore.len().0, 1);
+        
+        let retrieved = isocore.get_message(ItemId(0)).unwrap();
+        assert_eq!(retrieved, msg1);
+        
+        let hash1_again = isocore.get_root_hash().unwrap();
+        assert_eq!(hash1, hash1_again);
+    }
+
+    #[test]
+    fn isocore_multiple_messages() {
+        let mut isocore = IsoCore::create_mem();
+        
+        let messages = vec![
+            b"message 1",
+            b"message 2",
+            b"message 3",
+            b"message 4",
+        ];
+        
+        for msg in &messages {
+            isocore.add_message(*msg).unwrap();
+        }
+        
+        assert_eq!(isocore.len().0, 4);
+        
+        for (i, msg) in messages.iter().enumerate() {
+            let retrieved = isocore.get_message(ItemId(i as u64)).unwrap();
+            assert_eq!(retrieved, *msg);
+        }
+    }
+
+    #[test]
+    fn isocore_lazy_loading() {
+        let mut isocore = IsoCore::create_mem();
+        
+        isocore.add_message(b"test message").unwrap();
+        isocore.add_message(b"another message").unwrap();
+        
+        let msg = isocore.get_message(ItemId(0)).unwrap();
+        assert_eq!(msg, b"test message");
+        
+        let msg = isocore.get_message(ItemId(1)).unwrap();
+        assert_eq!(msg, b"another message");
+    }
+
+    #[test]
+    fn isocore_empty_len() {
+        let isocore = IsoCore::create_mem();
+        assert_eq!(isocore.len().0, 0);
+    }
+
+    #[test]
+    fn verkle_node_serialization() {
+        let node = VerkleNode {
+            children: vec![
+                NodeChild {
+                    node_type: NodeType::Leaf,
+                    hash: hash(b"test"),
+                    index: MessageId(0),
+                },
+            ],
+        };
+        
+        let bytes = node.to_bytes();
+        let parsed = VerkleNode::from_bytes(&bytes).unwrap();
+        
+        assert_eq!(parsed.children.len(), 1);
+        assert_eq!(parsed.children[0].node_type, NodeType::Leaf);
+        assert_eq!(parsed.children[0].index, MessageId(0));
+    }
 }

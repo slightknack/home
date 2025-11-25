@@ -86,8 +86,20 @@ use std::ops::Range;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CoveringId(pub u64);
 
+impl CoveringId {
+    pub fn to_u16(&self) -> u16 {
+        return self.0 as u16;
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ItemId(pub u64);
+
+impl ItemId {
+    pub fn to_u16(&self) -> u16 {
+        return self.0 as u16;
+    }
+}
 
 /// Returns the range of items covered by the node at the given covering index.
 pub fn covering_range(y: CoveringId, width: u64) -> Range<ItemId> {
@@ -100,14 +112,39 @@ pub fn covering_range(y: CoveringId, width: u64) -> Range<ItemId> {
     return Range { start: ItemId(end - len), end: ItemId(end) };
 }
 
+/// The covering nodes created when adding an item.
+#[derive(Debug, Clone)]
+pub struct Coverings {
+    range: Range<CoveringId>,
+}
+
+impl Coverings {
+    pub fn leaf(&self) -> CoveringId {
+        return self.range.start;
+    }
+
+    pub fn root(&self) -> CoveringId {
+        return CoveringId(self.range.end.0 - 1);
+    }
+
+    pub fn range(&self) -> Range<CoveringId> {
+        return self.range.clone();
+    }
+}
+
 /// Returns the range of covering indices that are completed when the nth item is added.
-pub fn coverings_for_item(n: ItemId, width: u64) -> Range<CoveringId> {
+pub fn coverings_for_item(n: ItemId, width: u64) -> Coverings {
     assert!(width > 1 && width.is_power_of_two());
 
     let start = map_item_to_covering(n.0, width);
     let height = count_trailing_zeros_base_w(n.0 + 1, width);
 
-    return Range { start: CoveringId(start), end: CoveringId(start + 1 + height as u64) };
+    return Coverings {
+        range: Range { 
+            start: CoveringId(start), 
+            end: CoveringId(start + 1 + height as u64) 
+        }
+    };
 }
 
 /// Returns the child covering indices for a given covering index.
@@ -179,8 +216,15 @@ mod tests {
 
     #[test]
     fn item_coverings() {
-        assert_eq!(coverings_for_item(ItemId(3), 4), CoveringId(3)..CoveringId(5));
-        assert_eq!(coverings_for_item(ItemId(4), 4), CoveringId(5)..CoveringId(6));
+        let c0 = coverings_for_item(ItemId(3), 4);
+        assert_eq!(c0.range(), CoveringId(3)..CoveringId(5));
+        assert_eq!(c0.leaf(), CoveringId(3));
+        assert_eq!(c0.root(), CoveringId(4));
+
+        let c1 = coverings_for_item(ItemId(4), 4);
+        assert_eq!(c1.range(), CoveringId(5)..CoveringId(6));
+        assert_eq!(c1.leaf(), CoveringId(5));
+        assert_eq!(c1.root(), CoveringId(5));
     }
 
     #[test]
