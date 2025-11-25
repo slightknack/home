@@ -1,0 +1,12 @@
+[package]
+name = "home"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+blake3 = "1.5"
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
+rand_core = "0.6"
