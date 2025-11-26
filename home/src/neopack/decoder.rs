@@ -102,7 +102,7 @@ impl<'a> Decoder<'a> {
         self.expect_blob(Tag::Bytes, |b| Ok(b))
     }
 
-    pub fn record_blob(&mut self) -> Result<&'a [u8]> {
+    pub fn record_raw(&mut self) -> Result<&'a [u8]> {
         self.expect_blob(Tag::Struct, |b| Ok(b))
     }
 
@@ -195,7 +195,7 @@ impl<'a> Decoder<'a> {
     }
 
     pub fn record(&mut self) -> Result<RecordDecoder<'a>> {
-        let bytes = self.record_blob()?;
+        let bytes = self.record_raw()?;
         Ok(RecordDecoder::new(bytes))
     }
 }
@@ -291,7 +291,7 @@ pub enum ValueDecoder<'a> {
     Struct(&'a [u8]), // Fixed-length in arrays
 
     /// Variable-size values (cannot appear in arrays)
-    String(&'a str),
+    Str(&'a str),
     List(ListDecoder<'a>),
     Map(MapDecoder<'a>),
     Array(ArrayDecoder<'a>),
@@ -302,36 +302,37 @@ impl<'a> ValueDecoder<'a> {
     /// This is used for Array items (where stride is known) and by the main
     /// `read` method (once it determines length).
     pub fn from_untagged_bytes(tag: Tag, bytes: &'a [u8]) -> Result<Self> {
+        use ValueDecoder::*;
         match tag {
-            Tag::Bool => Ok(ValueDecoder::Bool(FromBytes::read_from(bytes))),
-            Tag::U8   => Ok(ValueDecoder::U8(FromBytes::read_from(bytes))),
-            Tag::S8   => Ok(ValueDecoder::S8(FromBytes::read_from(bytes))),
-            Tag::U16  => Ok(ValueDecoder::U16(FromBytes::read_from(bytes))),
-            Tag::S16  => Ok(ValueDecoder::S16(FromBytes::read_from(bytes))),
-            Tag::U32  => Ok(ValueDecoder::U32(FromBytes::read_from(bytes))),
-            Tag::S32  => Ok(ValueDecoder::S32(FromBytes::read_from(bytes))),
-            Tag::U64  => Ok(ValueDecoder::U64(FromBytes::read_from(bytes))),
-            Tag::S64  => Ok(ValueDecoder::S64(FromBytes::read_from(bytes))),
-            Tag::F32  => Ok(ValueDecoder::F32(FromBytes::read_from(bytes))),
-            Tag::F64  => Ok(ValueDecoder::F64(FromBytes::read_from(bytes))),
+            Tag::Bool => Ok(Bool(FromBytes::read_from(bytes))),
+            Tag::U8   => Ok(U8(FromBytes::read_from(bytes))),
+            Tag::S8   => Ok(S8(FromBytes::read_from(bytes))),
+            Tag::U16  => Ok(U16(FromBytes::read_from(bytes))),
+            Tag::S16  => Ok(S16(FromBytes::read_from(bytes))),
+            Tag::U32  => Ok(U32(FromBytes::read_from(bytes))),
+            Tag::S32  => Ok(S32(FromBytes::read_from(bytes))),
+            Tag::U64  => Ok(U64(FromBytes::read_from(bytes))),
+            Tag::S64  => Ok(S64(FromBytes::read_from(bytes))),
+            Tag::F32  => Ok(F32(FromBytes::read_from(bytes))),
+            Tag::F64  => Ok(F64(FromBytes::read_from(bytes))),
 
-            Tag::Bytes => Ok(ValueDecoder::Bytes(bytes)),
-            Tag::Struct => Ok(ValueDecoder::Struct(bytes)),
+            Tag::Bytes => Ok(Bytes(bytes)),
+            Tag::Struct => Ok(Struct(bytes)),
 
             Tag::String => {
                 let s = std::str::from_utf8(bytes).map_err(|_| Error::InvalidUtf8)?;
-                Ok(ValueDecoder::String(s))
+                Ok(ValueDecoder::Str(s))
             }
 
             Tag::List => {
-                Ok(ValueDecoder::List(ListDecoder {
+                Ok(List(ListDecoder {
                     reader: Decoder::new(bytes),
                     end_pos: bytes.len(),
                 }))
             }
 
             Tag::Map => {
-                Ok(ValueDecoder::Map(MapDecoder {
+                Ok(Map(MapDecoder {
                     reader: Decoder::new(bytes),
                     end_pos: bytes.len(),
                 }))
@@ -348,7 +349,7 @@ impl<'a> ValueDecoder<'a> {
                 if stride == 0 || payload_len % (stride as usize) != 0 { return Err(Error::Malformed); }
                 let count = payload_len / (stride as usize);
 
-                Ok(ValueDecoder::Array(ArrayDecoder {
+                Ok(Array(ArrayDecoder {
                     reader: inner,
                     item_tag,
                     stride: stride as usize,
@@ -381,7 +382,7 @@ impl<'a> ValueDecoder<'a> {
     for_each_scalar!(decode_val_as, ());
 
     pub fn as_str(&self) -> Result<&'a str> {
-        match self { ValueDecoder::String(v) => Ok(*v), _ => Err(Error::TypeMismatch) }
+        match self { ValueDecoder::Str(v) => Ok(*v), _ => Err(Error::TypeMismatch) }
     }
 
     pub fn as_bytes(&self) -> Result<&'a [u8]> {
@@ -389,10 +390,10 @@ impl<'a> ValueDecoder<'a> {
     }
 }
 
+// TODO: figure out decoding validation
 pub struct RecordDecoder<'a> {
     inner: Decoder<'a>,
     end: usize,
-    validate: bool,
 }
 
 impl<'a> RecordDecoder<'a> {
@@ -400,7 +401,6 @@ impl<'a> RecordDecoder<'a> {
         Self {
             end: data.len(),
             inner: Decoder::new(data),
-            validate: true
         }
     }
 
@@ -408,13 +408,7 @@ impl<'a> RecordDecoder<'a> {
         Self {
             end: data.len(),
             inner: Decoder::new(data),
-            validate: false
         }
-    }
-
-    pub fn skip_validation(mut self) -> Self {
-        self.validate = false;
-        self
     }
 
     pub fn remaining(&self) -> usize {
@@ -434,7 +428,7 @@ impl<'a> RecordDecoder<'a> {
 
 impl<'a> Drop for RecordDecoder<'a> {
     fn drop(&mut self) {
-        if self.validate && self.inner.pos != self.end {
+        if self.inner.pos != self.end {
             debug_assert!(false, "RecordReader dropped with unread bytes");
         }
     }

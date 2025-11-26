@@ -94,11 +94,6 @@ impl Encoder {
         Ok(self)
     }
 
-    pub fn record_blob(&mut self, v: &[u8]) -> Result<&mut Self> {
-        self.write_blob(Tag::Struct, v)?;
-        Ok(self)
-    }
-
     pub fn list(&mut self) -> Result<ListEncoder<'_>> {
         if self.buf.len() >= u32::MAX as usize {
             return Err(Error::ContainerFull);
@@ -135,6 +130,11 @@ impl Encoder {
             scope: PatchScope::manual(self, len_offset, body_start),
             stride,
         })
+    }
+
+    pub fn record_raw(&mut self, v: &[u8]) -> Result<&mut Self> {
+        self.write_blob(Tag::Struct, v)?;
+        Ok(self)
     }
 
     /// Starts a standard Record (opaque struct with a Tag and Length header).
@@ -254,7 +254,7 @@ pub struct RecordEncoder<'a> {
 }
 
 impl<'a> RecordEncoder<'a> {
-    pub fn push(&mut self, data: &[u8]) -> Result<&mut Self> {
+    pub fn bytes(&mut self, data: &[u8]) -> Result<&mut Self> {
         self.scope.parent.buf.extend_from_slice(data);
         Ok(self)
     }
@@ -329,7 +329,7 @@ impl<'a> ArrayEncoder<'a> {
     for_each_multibyte_scalar!(encode_array_multibyte, ());
 
     /// Starts writing a fixed-size record into the array.
-    pub fn fixed_record(&mut self) -> RecordBodyEncoder<'_, 'a> {
+    pub fn record(&mut self) -> RecordBodyEncoder<'_, 'a> {
         let start = self.scope.parent.buf.len();
         RecordBodyEncoder {
             parent: self,
@@ -348,7 +348,7 @@ pub struct RecordBodyEncoder<'p, 'a> {
 }
 
 impl<'p, 'a> RecordBodyEncoder<'p, 'a> {
-    pub fn push(&mut self, data: &[u8]) -> Result<&mut Self> {
+    pub fn bytes(&mut self, data: &[u8]) -> Result<&mut Self> {
         // We bypass stride checks until finish
         unsafe { self.parent.push_unchecked(data)?; }
         Ok(self)

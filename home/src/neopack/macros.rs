@@ -73,7 +73,7 @@ macro_rules! encode_record_multibyte {
     ($name:ident, $as_name:ident, $ty:ty, $tag:expr, $var:ident, $ctx:tt) => {
         #[inline]
         pub fn $name(&mut self, v: $ty) -> crate::neopack::types::Result<&mut Self> {
-            self.push(&v.to_le_bytes())?;
+            self.bytes(&v.to_le_bytes())?;
             Ok(self)
         }
     };
@@ -108,9 +108,9 @@ macro_rules! encode_wrapper_api {
             Ok($post)
         }
 
-        pub fn record_blob($($recv)+, v: &[u8]) -> crate::neopack::types::Result<$ret_ty> {
+        pub fn record_raw($($recv)+, v: &[u8]) -> crate::neopack::types::Result<$ret_ty> {
             $pre
-            $parent.record_blob(v)?;
+            $parent.record_raw(v)?;
             Ok($post)
         }
 

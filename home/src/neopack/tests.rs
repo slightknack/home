@@ -179,11 +179,11 @@ fn test_bytes_roundtrip() -> R<()> {
 #[test]
 fn test_struct_blob_roundtrip() -> R<()> {
     let mut enc = Encoder::new();
-    enc.record_blob(&[10, 20, 30])?;
+    enc.record_raw(&[10, 20, 30])?;
     let bytes = enc.as_bytes();
 
     let mut r = Decoder::new(bytes);
-    assert_eq!(r.record_blob()?, &[10, 20, 30]);
+    assert_eq!(r.record_raw()?, &[10, 20, 30]);
     Ok(())
 }
 
@@ -575,7 +575,7 @@ fn test_struct_reader_sequential() -> R<()> {
     struct_data.extend_from_slice(&42u32.to_le_bytes());
     struct_data.extend_from_slice(&3.14f32.to_le_bytes());
     struct_data.push(123);
-    enc.record_blob(&struct_data)?;
+    enc.record_raw(&struct_data)?;
 
     let bytes = enc.as_bytes();
     let mut r = Decoder::new(&bytes);
@@ -591,7 +591,7 @@ fn test_struct_reader_sequential() -> R<()> {
 #[test]
 fn test_struct_reader_raw() -> R<()> {
     let mut enc = Encoder::new();
-    enc.record_blob(&[1, 2, 3, 4])?;
+    enc.record_raw(&[1, 2, 3, 4])?;
 
     let bytes = enc.as_bytes();
     let mut r = Decoder::new(&bytes);
@@ -606,7 +606,7 @@ fn test_struct_reader_raw() -> R<()> {
 #[should_panic(expected = "RecordReader dropped with")]
 fn test_struct_reader_incomplete_panic() {
     let mut enc = Encoder::new();
-    enc.record_blob(&[1, 2, 3, 4]).unwrap();
+    enc.record_raw(&[1, 2, 3, 4]).unwrap();
 
     let bytes = enc.as_bytes();
     let mut r = Decoder::new(&bytes);
@@ -787,7 +787,7 @@ fn test_empty_everything() -> R<()> {
     let mut enc = Encoder::new();
     enc.str("")?;
     enc.bytes(&[])?;
-    enc.record_blob(&[])?;
+    enc.record_raw(&[])?;
     enc.list()?.finish()?;
     enc.map()?.finish()?;
     enc.array(Tag::U8, 1)?.finish()?;
@@ -796,7 +796,7 @@ fn test_empty_everything() -> R<()> {
     let mut r = Decoder::new(&bytes);
     assert_eq!(r.str()?, "");
     assert_eq!(r.bytes()?, &[]);
-    assert_eq!(r.record_blob()?, &[]);
+    assert_eq!(r.record_raw()?, &[]);
     assert!(r.list()?.next()?.is_none());
     assert!(r.map()?.next()?.is_none());
     assert_eq!(r.array()?.remaining(), 0);
@@ -810,7 +810,7 @@ fn test_struct_as_custom_type() -> R<()> {
     point.extend_from_slice(&1.5f32.to_le_bytes());
     point.extend_from_slice(&2.5f32.to_le_bytes());
     point.extend_from_slice(&3.5f32.to_le_bytes());
-    enc.record_blob(&point)?;
+    enc.record_raw(&point)?;
 
     let bytes = enc.as_bytes();
     let mut r = Decoder::new(&bytes);
@@ -833,12 +833,12 @@ fn test_array_of_structs_layout() -> R<()> {
 
     let mut arr = enc.array(Tag::Struct, stride)?;
 
-    let mut rec = arr.fixed_record();
+    let mut rec = arr.record();
     rec.u32(1)?;
     rec.u32(2)?;
     rec.finish()?;
 
-    let mut rec = arr.fixed_record();
+    let mut rec = arr.record();
     rec.u32(10)?;
     rec.u32(20)?;
     rec.finish()?;
