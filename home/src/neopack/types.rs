@@ -56,6 +56,11 @@ pub enum Error {
     Malformed,
     BlobTooLarge(usize),
     ContainerFull,
+    SeekBeforeBuffer,
+    SeekAfterBuffer,
+    ScopeOpen,
+    PositionFreed,
+    OutOfBounds,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

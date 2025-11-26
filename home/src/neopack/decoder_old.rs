@@ -1,7 +1,6 @@
 use crate::neopack::types::Result;
 use crate::neopack::types::Error;
 use crate::neopack::types::Tag;
-use crate::neopack::cursor::Cursor;
 use crate::neopack::macros::impl_from_bytes;
 use crate::neopack::macros::decode_array_method;
 use crate::neopack::macros::decode_val_as;
@@ -34,48 +33,60 @@ impl_from_bytes!(f32, 4); impl_from_bytes!(f64, 8);
 
 #[derive(Debug, Clone)]
 pub struct Decoder<'a> {
-    cursor: Cursor<'a>,
+    pub buf: &'a [u8],
+    pub pos: usize,
 }
 
 impl<'a> Decoder<'a> {
     pub fn new(buf: &'a [u8]) -> Self {
-        Self {
-            cursor: Cursor::new(buf),
-        }
-    }
-
-    pub fn with_cursor(cursor: Cursor<'a>) -> Self {
-        Self { cursor }
-    }
-
-    pub fn cursor(&self) -> &Cursor<'a> {
-        &self.cursor
-    }
-
-    pub fn cursor_mut(&mut self) -> &mut Cursor<'a> {
-        &mut self.cursor
+        Self { buf, pos: 0 }
     }
 
     pub fn pos(&self) -> usize {
-        self.cursor.pos()
+        self.pos
     }
 
     pub fn remaining(&self) -> usize {
-        self.cursor.remaining()
+        self.buf.len().saturating_sub(self.pos)
+    }
+
+    #[inline]
+    fn need(&self, n: usize) -> Result<()> {
+        if self.remaining() < n {
+            Err(Error::Pending(n - self.remaining()))
+        } else {
+            Ok(())
+        }
     }
 
     fn read_primitive<T: FromBytes>(&mut self) -> Result<T> {
-        let bytes = self.cursor.read_bytes(T::SIZE)?;
-        Ok(T::read_from(bytes))
+        self.need(T::SIZE)?;
+        let val = T::read_from(&self.buf[self.pos..]);
+        self.pos += T::SIZE;
+        Ok(val)
+    }
+
+    fn read_bytes(&mut self, len: usize) -> Result<&'a [u8]> {
+        self.need(len)?;
+        let slice = &self.buf[self.pos..self.pos + len];
+        self.pos += len;
+        Ok(slice)
+    }
+
+    fn skip(&mut self, len: usize) -> Result<()> {
+        self.need(len)?;
+        self.pos += len;
+        Ok(())
     }
 
     pub fn read_tag(&mut self) -> Result<Tag> {
-        let byte = self.cursor.read_byte()?;
+        let byte: u8 = self.read_primitive()?;
         Tag::from_u8(byte).ok_or(Error::InvalidTag(byte))
     }
 
     pub fn peek_tag(&self) -> Result<Tag> {
-        let byte = self.cursor.peek_byte()?;
+        self.need(1)?;
+        let byte = self.buf[self.pos];
         Tag::from_u8(byte).ok_or(Error::InvalidTag(byte))
     }
 
@@ -104,7 +115,7 @@ impl<'a> Decoder<'a> {
             return Err(Error::TypeMismatch);
         }
         let len: u32 = self.read_primitive()?;
-        let bytes = self.cursor.read_bytes(len as usize)?;
+        let bytes = self.read_bytes(len as usize)?;
         f(bytes)
     }
 
@@ -115,26 +126,17 @@ impl<'a> Decoder<'a> {
     pub fn skip_value(&mut self) -> Result<()> {
         let tag = self.read_tag()?;
         match tag {
-            Tag::Bool | Tag::U8 | Tag::S8 => self.cursor.skip(1),
-            Tag::U16 | Tag::S16 => self.cursor.skip(2),
-            Tag::U32 | Tag::S32 | Tag::F32 => self.cursor.skip(4),
-            Tag::U64 | Tag::S64 | Tag::F64 => self.cursor.skip(8),
+            Tag::Bool | Tag::U8 | Tag::S8 => self.skip(1),
+            Tag::U16 | Tag::S16 => self.skip(2),
+            Tag::U32 | Tag::S32 | Tag::F32 => self.skip(4),
+            Tag::U64 | Tag::S64 | Tag::F64 => self.skip(8),
 
             Tag::String | Tag::Bytes | Tag::Struct |
             Tag::List | Tag::Map | Tag::Array => {
                 let len: u32 = self.read_primitive()?;
-                self.cursor.skip(len as usize)
+                self.skip(len as usize)
             }
         }
-    }
-
-    /// Extract the raw bytes for the next value without decoding it
-    pub fn raw_value(&mut self) -> Result<&'a [u8]> {
-        let start_pos = self.cursor.pos();
-        self.skip_value()?;
-        let end_pos = self.cursor.pos();
-        let slice = self.cursor.full_slice();
-        Ok(&slice[start_pos..end_pos])
     }
 
     pub fn list(&mut self) -> Result<ListDecoder<'a>> {
@@ -143,10 +145,10 @@ impl<'a> Decoder<'a> {
             return Err(Error::TypeMismatch);
         }
         let byte_len: u32 = self.read_primitive()?;
-        let bytes = self.cursor.read_bytes(byte_len as usize)?;
+        let bytes = self.read_bytes(byte_len as usize)?;
 
         Ok(ListDecoder {
-            cursor: Cursor::new(bytes),
+            reader: Decoder::new(bytes),
             end_pos: bytes.len(),
         })
     }
@@ -157,10 +159,10 @@ impl<'a> Decoder<'a> {
             return Err(Error::TypeMismatch);
         }
         let byte_len: u32 = self.read_primitive()?;
-        let bytes = self.cursor.read_bytes(byte_len as usize)?;
+        let bytes = self.read_bytes(byte_len as usize)?;
 
         Ok(MapDecoder {
-            cursor: Cursor::new(bytes),
+            reader: Decoder::new(bytes),
             end_pos: bytes.len(),
         })
     }
@@ -171,24 +173,23 @@ impl<'a> Decoder<'a> {
             return Err(Error::TypeMismatch);
         }
         let byte_len: u32 = self.read_primitive()?;
-        let bytes = self.cursor.read_bytes(byte_len as usize)?;
+        let bytes = self.read_bytes(byte_len as usize)?;
 
-        let mut inner = Cursor::new(bytes);
-        let item_tag_byte = inner.read_byte()?;
-        let item_tag = Tag::from_u8(item_tag_byte).ok_or(Error::InvalidTag(item_tag_byte))?;
-        let stride_bytes = inner.read_bytes(4)?;
-        let stride = u32::from_le_bytes([stride_bytes[0], stride_bytes[1], stride_bytes[2], stride_bytes[3]]) as usize;
+        // Array setup requires parsing the header from the payload
+        let mut inner = Decoder::new(bytes);
+        let item_tag = Tag::from_u8(inner.read_primitive()?).ok_or(Error::InvalidTag(0))?;
+        let stride: u32 = inner.read_primitive()?;
 
-        let header_size = 5;
+        let header_size = 5; // 1 (tag) + 4 (stride)
         let payload_len = bytes.len().saturating_sub(header_size);
 
-        if stride == 0 || payload_len % stride != 0 { return Err(Error::Malformed); }
-        let count = payload_len / stride;
+        if stride == 0 || payload_len % (stride as usize) != 0 { return Err(Error::Malformed); }
+        let count = payload_len / (stride as usize);
 
         Ok(ArrayDecoder {
-            cursor: inner,
+            reader: inner, // pos is now after header
             item_tag,
-            stride,
+            stride: stride as usize,
             remaining: count,
         })
     }
@@ -201,51 +202,45 @@ impl<'a> Decoder<'a> {
 
 #[derive(Debug)]
 pub struct ListDecoder<'a> {
-    cursor: Cursor<'a>,
+    reader: Decoder<'a>,
     end_pos: usize,
 }
 
 impl<'a> ListDecoder<'a> {
     pub fn next(&mut self) -> Result<Option<ValueDecoder<'a>>> {
-        if self.cursor.pos() >= self.end_pos {
+        if self.reader.pos >= self.end_pos {
             return Ok(None);
         }
-        let mut decoder = Decoder::with_cursor(self.cursor.clone());
-        let value = ValueDecoder::read(&mut decoder)?;
-        self.cursor = decoder.cursor;
-        Ok(Some(value))
+        ValueDecoder::read(&mut self.reader).map(Some)
     }
 }
 
 #[derive(Debug)]
 pub struct MapDecoder<'a> {
-    cursor: Cursor<'a>,
+    reader: Decoder<'a>,
     end_pos: usize,
 }
 
 impl<'a> MapDecoder<'a> {
     pub fn next(&mut self) -> Result<Option<(&'a str, ValueDecoder<'a>)>> {
-        if self.cursor.pos() >= self.end_pos {
+        if self.reader.pos >= self.end_pos {
             return Ok(None);
         }
 
-        let mut decoder = Decoder::with_cursor(self.cursor.clone());
-        
-        let tag = decoder.read_tag()?;
+        let tag = self.reader.read_tag()?;
         if tag != Tag::String { return Err(Error::TypeMismatch); }
-        let k_len: u32 = decoder.read_primitive()?;
-        let k_bytes = decoder.cursor.read_bytes(k_len as usize)?;
+        let k_len: u32 = self.reader.read_primitive()?;
+        let k_bytes = self.reader.read_bytes(k_len as usize)?;
         let key = std::str::from_utf8(k_bytes).map_err(|_| Error::InvalidUtf8)?;
 
-        let val = ValueDecoder::read(&mut decoder)?;
-        self.cursor = decoder.cursor;
+        let val = ValueDecoder::read(&mut self.reader)?;
         Ok(Some((key, val)))
     }
 }
 
 #[derive(Debug)]
 pub struct ArrayDecoder<'a> {
-    cursor: Cursor<'a>,
+    reader: Decoder<'a>,
     item_tag: Tag,
     stride: usize,
     remaining: usize,
@@ -260,7 +255,7 @@ impl<'a> ArrayDecoder<'a> {
         if self.remaining == 0 { return Ok(None); }
         self.remaining -= 1;
 
-        let bytes = self.cursor.read_bytes(self.stride)?;
+        let bytes = self.reader.read_bytes(self.stride)?;
         let value = ValueDecoder::from_untagged_bytes(self.item_tag, bytes)?;
 
         Ok(Some(value))
@@ -269,7 +264,7 @@ impl<'a> ArrayDecoder<'a> {
     pub fn skip_all(&mut self) -> Result<()> {
         if self.remaining > 0 {
             let skip = self.remaining * self.stride;
-            self.cursor.skip(skip)?;
+            self.reader.skip(skip)?;
             self.remaining = 0;
         }
         Ok(())
@@ -280,6 +275,7 @@ impl<'a> ArrayDecoder<'a> {
 
 #[derive(Debug)]
 pub enum ValueDecoder<'a> {
+    // Fixed-size values (can appear in arrays)
     Bool(bool),
     U8(u8),
     S8(i8),
@@ -291,8 +287,10 @@ pub enum ValueDecoder<'a> {
     S64(i64),
     F32(f32),
     F64(f64),
-    Bytes(&'a [u8]),
-    Struct(&'a [u8]),
+    Bytes(&'a [u8]),  // Fixed-length in arrays
+    Struct(&'a [u8]), // Fixed-length in arrays
+
+    /// Variable-size values (cannot appear in arrays)
     Str(&'a str),
     List(ListDecoder<'a>),
     Map(MapDecoder<'a>),
@@ -300,6 +298,9 @@ pub enum ValueDecoder<'a> {
 }
 
 impl<'a> ValueDecoder<'a> {
+    /// Decodes a value from a raw slice of bytes, assuming the given Tag.
+    /// This is used for Array items (where stride is known) and by the main
+    /// `read` method (once it determines length).
     pub fn from_untagged_bytes(tag: Tag, bytes: &'a [u8]) -> Result<Self> {
         use ValueDecoder::*;
         match tag {
@@ -325,44 +326,43 @@ impl<'a> ValueDecoder<'a> {
 
             Tag::List => {
                 Ok(List(ListDecoder {
-                    cursor: Cursor::new(bytes),
+                    reader: Decoder::new(bytes),
                     end_pos: bytes.len(),
                 }))
             }
 
             Tag::Map => {
                 Ok(Map(MapDecoder {
-                    cursor: Cursor::new(bytes),
+                    reader: Decoder::new(bytes),
                     end_pos: bytes.len(),
                 }))
             }
 
             Tag::Array => {
-                let mut inner = Cursor::new(bytes);
-                let item_tag_byte = inner.read_byte()?;
-                let item_tag = Tag::from_u8(item_tag_byte).ok_or(Error::InvalidTag(item_tag_byte))?;
-                let stride_bytes = inner.read_bytes(4)?;
-                let stride = u32::from_le_bytes([stride_bytes[0], stride_bytes[1], stride_bytes[2], stride_bytes[3]]) as usize;
+                let mut inner = Decoder::new(bytes);
+                let item_tag = Tag::from_u8(inner.read_primitive()?).ok_or(Error::InvalidTag(0))?;
+                let stride: u32 = inner.read_primitive()?;
 
                 let header_size = 5;
                 let payload_len = bytes.len().saturating_sub(header_size);
 
-                if stride == 0 || payload_len % stride != 0 { return Err(Error::Malformed); }
-                let count = payload_len / stride;
+                if stride == 0 || payload_len % (stride as usize) != 0 { return Err(Error::Malformed); }
+                let count = payload_len / (stride as usize);
 
                 Ok(Array(ArrayDecoder {
-                    cursor: inner,
+                    reader: inner,
                     item_tag,
-                    stride,
+                    stride: stride as usize,
                     remaining: count,
                 }))
             }
         }
     }
 
-    pub fn read(decoder: &mut Decoder<'a>) -> Result<Self> {
-        let tag = decoder.read_tag()?;
+    pub fn read(r: &mut Decoder<'a>) -> Result<Self> {
+        let tag = r.read_tag()?;
 
+        // Determine size of the payload
         let len = match tag {
             Tag::Bool | Tag::U8 | Tag::S8 => 1,
             Tag::U16 | Tag::S16 => 2,
@@ -371,11 +371,11 @@ impl<'a> ValueDecoder<'a> {
 
             Tag::String | Tag::Bytes | Tag::Struct |
             Tag::List | Tag::Map | Tag::Array => {
-                decoder.read_primitive::<u32>()? as usize
+                r.read_primitive::<u32>()? as usize
             }
         };
 
-        let bytes = decoder.cursor.read_bytes(len)?;
+        let bytes = r.read_bytes(len)?;
         Self::from_untagged_bytes(tag, bytes)
     }
 
@@ -390,8 +390,9 @@ impl<'a> ValueDecoder<'a> {
     }
 }
 
+// TODO: figure out decoding validation
 pub struct RecordDecoder<'a> {
-    cursor: Cursor<'a>,
+    inner: Decoder<'a>,
     end: usize,
 }
 
@@ -399,40 +400,35 @@ impl<'a> RecordDecoder<'a> {
     pub fn new(data: &'a [u8]) -> Self {
         Self {
             end: data.len(),
-            cursor: Cursor::new(data),
+            inner: Decoder::new(data),
         }
     }
 
     pub fn new_unchecked(data: &'a [u8]) -> Self {
         Self {
             end: data.len(),
-            cursor: Cursor::new(data),
+            inner: Decoder::new(data),
         }
     }
 
     pub fn remaining(&self) -> usize {
-        self.cursor.remaining()
+        self.inner.remaining()
     }
 
     pub fn raw(&self) -> &'a [u8] {
-        self.cursor.as_slice()
-    }
-
-    fn read_primitive<T: FromBytes>(&mut self) -> Result<T> {
-        let bytes = self.cursor.read_bytes(T::SIZE)?;
-        Ok(T::read_from(bytes))
+        self.inner.buf
     }
 
     for_each_scalar!(decode_record_prim, ());
 
     pub fn bytes(&mut self, len: usize) -> Result<&'a [u8]> {
-        self.cursor.read_bytes(len)
+        self.inner.read_bytes(len)
     }
 }
 
 impl<'a> Drop for RecordDecoder<'a> {
     fn drop(&mut self) {
-        if self.cursor.pos() != self.end {
+        if self.inner.pos != self.end {
             debug_assert!(false, "RecordReader dropped with unread bytes");
         }
     }

@@ -10,3 +10,9 @@ blake3 = "1.5"
 chacha20poly1305 = "0.10"
 argon2 = "0.5"
 rand_core = "0.6"
+zstd = "0.13"
+memmap2 = "0.9"
+
+[[example]]
+name = "verify_compact"
+path = "examples/verify_compact.rs"
