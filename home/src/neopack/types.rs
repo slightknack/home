@@ -45,16 +45,6 @@ impl Tag {
             _ => None,
         }
     }
-
-    pub const fn fixed_len(&self) -> Option<usize> {
-        match self {
-            Tag::Bool | Tag::S8 | Tag::U8 => Some(1),
-            Tag::S16 | Tag::U16 => Some(2),
-            Tag::S32 | Tag::U32 | Tag::F32 => Some(4),
-            Tag::S64 | Tag::U64 | Tag::F64 => Some(8),
-            Tag::String | Tag::Bytes | Tag::Struct | Tag::List | Tag::Map | Tag::Array => None,
-        }
-    }
 }
 
 #[derive(Debug)]

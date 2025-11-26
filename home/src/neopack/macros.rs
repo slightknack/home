@@ -1,3 +1,6 @@
+//! Macros macros macros! Get your macros!
+//! Chicken, broccoli, rice!
+
 /// Defines the schema of scalar types supported by the format.
 /// Arguments passed to callback:
 /// 1. Method Name

@@ -1,7 +1,12 @@
-use crate::neopack::types::{Tag, Error, Result};
-use crate::neopack::macros::{
-    for_each_scalar, decode_expect_tag, decode_record_prim, decode_val_as, decode_array_method, impl_from_bytes
-};
+use crate::neopack::types::Result;
+use crate::neopack::types::Error;
+use crate::neopack::types::Tag;
+use crate::neopack::macros::impl_from_bytes;
+use crate::neopack::macros::decode_array_method;
+use crate::neopack::macros::decode_val_as;
+use crate::neopack::macros::decode_expect_tag;
+use crate::neopack::macros::decode_record_prim;
+use crate::neopack::macros::for_each_scalar;
 
 pub(crate) trait FromBytes: Sized + Copy {
     const SIZE: usize;
@@ -26,7 +31,7 @@ impl_from_bytes!(u32, 4); impl_from_bytes!(i32, 4);
 impl_from_bytes!(u64, 8); impl_from_bytes!(i64, 8);
 impl_from_bytes!(f32, 4); impl_from_bytes!(f64, 8);
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Reader<'a> {
     pub buf: &'a [u8],
     pub pos: usize,
@@ -140,14 +145,11 @@ impl<'a> Reader<'a> {
             return Err(Error::TypeMismatch);
         }
         let byte_len: u32 = self.read_primitive()?;
-        let end_pos = self.pos + (byte_len as usize);
-        if end_pos > self.buf.len() {
-             return Err(Error::Pending(end_pos - self.buf.len()));
-        }
+        let bytes = self.read_bytes(byte_len as usize)?;
 
         Ok(ListIter {
-            reader: self.clone(),
-            end_pos,
+            reader: Reader::new(bytes),
+            end_pos: bytes.len(),
         })
     }
 
@@ -157,14 +159,11 @@ impl<'a> Reader<'a> {
             return Err(Error::TypeMismatch);
         }
         let byte_len: u32 = self.read_primitive()?;
-        let end_pos = self.pos + (byte_len as usize);
-        if end_pos > self.buf.len() {
-             return Err(Error::Pending(end_pos - self.buf.len()));
-        }
+        let bytes = self.read_bytes(byte_len as usize)?;
 
         Ok(MapIter {
-            reader: self.clone(),
-            end_pos,
+            reader: Reader::new(bytes),
+            end_pos: bytes.len(),
         })
     }
 
@@ -174,22 +173,21 @@ impl<'a> Reader<'a> {
             return Err(Error::TypeMismatch);
         }
         let byte_len: u32 = self.read_primitive()?;
-        let end_pos = self.pos + (byte_len as usize);
-        if end_pos > self.buf.len() {
-             return Err(Error::Pending(end_pos - self.buf.len()));
-        }
+        let bytes = self.read_bytes(byte_len as usize)?;
 
-        let item_tag = Tag::from_u8(self.read_primitive()?).ok_or(Error::InvalidTag(0))?;
-        let stride: u32 = self.read_primitive()?;
+        // Array setup requires parsing the header from the payload
+        let mut inner = Reader::new(bytes);
+        let item_tag = Tag::from_u8(inner.read_primitive()?).ok_or(Error::InvalidTag(0))?;
+        let stride: u32 = inner.read_primitive()?;
 
-        let header_size = 5;
-        if byte_len < header_size { return Err(Error::Malformed); }
-        let payload_len = byte_len - header_size;
-        if stride == 0 || payload_len % stride != 0 { return Err(Error::Malformed); }
-        let count = (payload_len / stride) as usize;
+        let header_size = 5; // 1 (tag) + 4 (stride)
+        let payload_len = bytes.len().saturating_sub(header_size);
+
+        if stride == 0 || payload_len % (stride as usize) != 0 { return Err(Error::Malformed); }
+        let count = payload_len / (stride as usize);
 
         Ok(ArrayIter {
-            reader: self.clone(),
+            reader: inner, // pos is now after header
             item_tag,
             stride: stride as usize,
             remaining: count,
@@ -202,6 +200,7 @@ impl<'a> Reader<'a> {
     }
 }
 
+#[derive(Debug)]
 pub struct ListIter<'a> {
     reader: Reader<'a>,
     end_pos: usize,
@@ -216,6 +215,7 @@ impl<'a> ListIter<'a> {
     }
 }
 
+#[derive(Debug)]
 pub struct MapIter<'a> {
     reader: Reader<'a>,
     end_pos: usize,
@@ -238,6 +238,7 @@ impl<'a> MapIter<'a> {
     }
 }
 
+#[derive(Debug)]
 pub struct ArrayIter<'a> {
     reader: Reader<'a>,
     item_tag: Tag,
@@ -250,10 +251,14 @@ impl<'a> ArrayIter<'a> {
     pub fn stride(&self) -> usize { self.stride }
     pub fn remaining(&self) -> usize { self.remaining }
 
-    pub fn next(&mut self) -> Result<Option<&'a [u8]>> {
+    pub fn next(&mut self) -> Result<Option<ValueReader<'a>>> {
         if self.remaining == 0 { return Ok(None); }
         self.remaining -= 1;
-        self.reader.read_bytes(self.stride).map(Some)
+
+        let bytes = self.reader.read_bytes(self.stride)?;
+        let value = ValueReader::from_untagged_bytes(self.item_tag, bytes)?;
+
+        Ok(Some(value))
     }
 
     pub fn skip_all(&mut self) -> Result<()> {
@@ -268,95 +273,109 @@ impl<'a> ArrayIter<'a> {
     for_each_scalar!(decode_array_method, ());
 }
 
+#[derive(Debug)]
 pub enum ValueReader<'a> {
+    // Fixed-size values (can appear in arrays)
     Bool(bool),
-    U8(u8),   S8(i8),
-    U16(u16), S16(i16),
-    U32(u32), S32(i32),
-    U64(u64), S64(i64),
-    F32(f32), F64(f64),
+    U8(u8),
+    S8(i8),
+    U16(u16),
+    S16(i16),
+    U32(u32),
+    S32(i32),
+    U64(u64),
+    S64(i64),
+    F32(f32),
+    F64(f64),
+    Bytes(&'a [u8]),  // Fixed-length in arrays
+    Struct(&'a [u8]), // Fixed-length in arrays
+
+    /// Variable-size values (cannot appear in arrays)
     String(&'a str),
-    Bytes(&'a [u8]),
-    Struct(&'a [u8]),
     List(ListIter<'a>),
     Map(MapIter<'a>),
     Array(ArrayIter<'a>),
 }
 
 impl<'a> ValueReader<'a> {
-    fn read(r: &mut Reader<'a>) -> Result<Self> {
-        let tag = r.read_tag()?;
-
+    /// Decodes a value from a raw slice of bytes, assuming the given Tag.
+    /// This is used for Array items (where stride is known) and by the main
+    /// `read` method (once it determines length).
+    pub fn from_untagged_bytes(tag: Tag, bytes: &'a [u8]) -> Result<Self> {
         match tag {
-            Tag::Bool => Ok(ValueReader::Bool(r.read_primitive()?)),
-            Tag::U8   => Ok(ValueReader::U8(r.read_primitive()?)),
-            Tag::S8   => Ok(ValueReader::S8(r.read_primitive()?)),
-            Tag::U16  => Ok(ValueReader::U16(r.read_primitive()?)),
-            Tag::S16  => Ok(ValueReader::S16(r.read_primitive()?)),
-            Tag::U32  => Ok(ValueReader::U32(r.read_primitive()?)),
-            Tag::S32  => Ok(ValueReader::S32(r.read_primitive()?)),
-            Tag::U64  => Ok(ValueReader::U64(r.read_primitive()?)),
-            Tag::S64  => Ok(ValueReader::S64(r.read_primitive()?)),
-            Tag::F32  => Ok(ValueReader::F32(r.read_primitive()?)),
-            Tag::F64  => Ok(ValueReader::F64(r.read_primitive()?)),
+            Tag::Bool => Ok(ValueReader::Bool(FromBytes::read_from(bytes))),
+            Tag::U8   => Ok(ValueReader::U8(FromBytes::read_from(bytes))),
+            Tag::S8   => Ok(ValueReader::S8(FromBytes::read_from(bytes))),
+            Tag::U16  => Ok(ValueReader::U16(FromBytes::read_from(bytes))),
+            Tag::S16  => Ok(ValueReader::S16(FromBytes::read_from(bytes))),
+            Tag::U32  => Ok(ValueReader::U32(FromBytes::read_from(bytes))),
+            Tag::S32  => Ok(ValueReader::S32(FromBytes::read_from(bytes))),
+            Tag::U64  => Ok(ValueReader::U64(FromBytes::read_from(bytes))),
+            Tag::S64  => Ok(ValueReader::S64(FromBytes::read_from(bytes))),
+            Tag::F32  => Ok(ValueReader::F32(FromBytes::read_from(bytes))),
+            Tag::F64  => Ok(ValueReader::F64(FromBytes::read_from(bytes))),
+
+            Tag::Bytes => Ok(ValueReader::Bytes(bytes)),
+            Tag::Struct => Ok(ValueReader::Struct(bytes)),
 
             Tag::String => {
-                let len: u32 = r.read_primitive()?;
-                let bytes = r.read_bytes(len as usize)?;
                 let s = std::str::from_utf8(bytes).map_err(|_| Error::InvalidUtf8)?;
                 Ok(ValueReader::String(s))
             }
-            Tag::Bytes => {
-                let len: u32 = r.read_primitive()?;
-                Ok(ValueReader::Bytes(r.read_bytes(len as usize)?))
-            }
-            Tag::Struct => {
-                let len: u32 = r.read_primitive()?;
-                Ok(ValueReader::Struct(r.read_bytes(len as usize)?))
-            }
+
             Tag::List => {
-                let byte_len: u32 = r.read_primitive()?;
-                let end_pos = r.pos + (byte_len as usize);
-                let iter = ListIter {
-                    reader: r.clone(),
-                    end_pos,
-                };
-                r.pos = end_pos;
-                Ok(ValueReader::List(iter))
+                Ok(ValueReader::List(ListIter {
+                    reader: Reader::new(bytes),
+                    end_pos: bytes.len(),
+                }))
             }
+
             Tag::Map => {
-                let byte_len: u32 = r.read_primitive()?;
-                let end_pos = r.pos + (byte_len as usize);
-                let iter = MapIter {
-                    reader: r.clone(),
-                    end_pos,
-                };
-                r.pos = end_pos;
-                Ok(ValueReader::Map(iter))
+                Ok(ValueReader::Map(MapIter {
+                    reader: Reader::new(bytes),
+                    end_pos: bytes.len(),
+                }))
             }
+
             Tag::Array => {
-                let byte_len: u32 = r.read_primitive()?;
-                let item_tag = Tag::from_u8(r.read_primitive()?).ok_or(Error::InvalidTag(0))?;
-                let stride: u32 = r.read_primitive()?;
+                let mut inner = Reader::new(bytes);
+                let item_tag = Tag::from_u8(inner.read_primitive()?).ok_or(Error::InvalidTag(0))?;
+                let stride: u32 = inner.read_primitive()?;
 
                 let header_size = 5;
-                if byte_len < header_size { return Err(Error::Malformed); }
-                let payload_len = byte_len - header_size;
-                if stride == 0 || payload_len % stride != 0 { return Err(Error::Malformed); }
-                let count = (payload_len / stride) as usize;
+                let payload_len = bytes.len().saturating_sub(header_size);
 
-                let body_start = r.pos;
-                let body_end = body_start + payload_len as usize;
-                let iter = ArrayIter {
-                    reader: r.clone(),
+                if stride == 0 || payload_len % (stride as usize) != 0 { return Err(Error::Malformed); }
+                let count = payload_len / (stride as usize);
+
+                Ok(ValueReader::Array(ArrayIter {
+                    reader: inner,
                     item_tag,
                     stride: stride as usize,
                     remaining: count,
-                };
-                r.pos = body_end;
-                Ok(ValueReader::Array(iter))
+                }))
             }
         }
+    }
+
+    pub fn read(r: &mut Reader<'a>) -> Result<Self> {
+        let tag = r.read_tag()?;
+
+        // Determine size of the payload
+        let len = match tag {
+            Tag::Bool | Tag::U8 | Tag::S8 => 1,
+            Tag::U16 | Tag::S16 => 2,
+            Tag::U32 | Tag::S32 | Tag::F32 => 4,
+            Tag::U64 | Tag::S64 | Tag::F64 => 8,
+
+            Tag::String | Tag::Bytes | Tag::Struct |
+            Tag::List | Tag::Map | Tag::Array => {
+                r.read_primitive::<u32>()? as usize
+            }
+        };
+
+        let bytes = r.read_bytes(len)?;
+        Self::from_untagged_bytes(tag, bytes)
     }
 
     for_each_scalar!(decode_val_as, ());

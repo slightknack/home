@@ -1,14 +1,14 @@
 use super::*;
 use crate::neopack::types::{Tag, Error};
-use crate::neopack::ValueReader;
+use crate::neopack::{ValueReader, RecordReader};
 
 type R<T> = Result<T>;
 
 #[test]
 fn test_bool_roundtrip() -> R<()> {
     let mut enc = Encoder::new();
-    enc.bool(true);
-    enc.bool(false);
+    enc.bool(true)?;
+    enc.bool(false)?;
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -20,7 +20,7 @@ fn test_bool_roundtrip() -> R<()> {
 #[test]
 fn test_u8_roundtrip() -> R<()> {
     let mut enc = Encoder::new();
-    enc.u8(0); enc.u8(255); enc.u8(42);
+    enc.u8(0)?; enc.u8(255)?; enc.u8(42)?;
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -33,7 +33,7 @@ fn test_u8_roundtrip() -> R<()> {
 #[test]
 fn test_i8_roundtrip() -> R<()> {
     let mut enc = Encoder::new();
-    enc.i8(-128); enc.i8(127); enc.i8(0); enc.i8(-1);
+    enc.i8(-128)?; enc.i8(127)?; enc.i8(0)?; enc.i8(-1)?;
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -47,7 +47,7 @@ fn test_i8_roundtrip() -> R<()> {
 #[test]
 fn test_u16_roundtrip() -> R<()> {
     let mut enc = Encoder::new();
-    enc.u16(0); enc.u16(65535); enc.u16(1234);
+    enc.u16(0)?; enc.u16(65535)?; enc.u16(1234)?;
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -60,7 +60,7 @@ fn test_u16_roundtrip() -> R<()> {
 #[test]
 fn test_i16_roundtrip() -> R<()> {
     let mut enc = Encoder::new();
-    enc.i16(-32768); enc.i16(32767); enc.i16(0);
+    enc.i16(-32768)?; enc.i16(32767)?; enc.i16(0)?;
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -73,7 +73,7 @@ fn test_i16_roundtrip() -> R<()> {
 #[test]
 fn test_u32_roundtrip() -> R<()> {
     let mut enc = Encoder::new();
-    enc.u32(0); enc.u32(4294967295); enc.u32(123456);
+    enc.u32(0)?; enc.u32(4294967295)?; enc.u32(123456)?;
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -86,7 +86,7 @@ fn test_u32_roundtrip() -> R<()> {
 #[test]
 fn test_i32_roundtrip() -> R<()> {
     let mut enc = Encoder::new();
-    enc.i32(-2147483648); enc.i32(2147483647); enc.i32(0);
+    enc.i32(-2147483648)?; enc.i32(2147483647)?; enc.i32(0)?;
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -99,7 +99,7 @@ fn test_i32_roundtrip() -> R<()> {
 #[test]
 fn test_u64_roundtrip() -> R<()> {
     let mut enc = Encoder::new();
-    enc.u64(0); enc.u64(u64::MAX); enc.u64(123456789);
+    enc.u64(0)?; enc.u64(u64::MAX)?; enc.u64(123456789)?;
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -112,7 +112,7 @@ fn test_u64_roundtrip() -> R<()> {
 #[test]
 fn test_i64_roundtrip() -> R<()> {
     let mut enc = Encoder::new();
-    enc.i64(i64::MIN); enc.i64(i64::MAX); enc.i64(0);
+    enc.i64(i64::MIN)?; enc.i64(i64::MAX)?; enc.i64(0)?;
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -125,7 +125,7 @@ fn test_i64_roundtrip() -> R<()> {
 #[test]
 fn test_f32_roundtrip() -> R<()> {
     let mut enc = Encoder::new();
-    enc.f32(0.0); enc.f32(3.14159); enc.f32(-1.5); enc.f32(f32::INFINITY);
+    enc.f32(0.0)?; enc.f32(3.14159)?; enc.f32(-1.5)?; enc.f32(f32::INFINITY)?;
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -139,7 +139,7 @@ fn test_f32_roundtrip() -> R<()> {
 #[test]
 fn test_f64_roundtrip() -> R<()> {
     let mut enc = Encoder::new();
-    enc.f64(0.0); enc.f64(3.141592653589793); enc.f64(-2.5); enc.f64(f64::NEG_INFINITY);
+    enc.f64(0.0)?; enc.f64(3.141592653589793)?; enc.f64(-2.5)?; enc.f64(f64::NEG_INFINITY)?;
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -190,10 +190,12 @@ fn test_struct_blob_roundtrip() -> R<()> {
 #[test]
 fn test_list_scalars() -> R<()> {
     let mut enc = Encoder::new();
-    {
-        let mut list = enc.list()?;
-        list.u32(1)?; list.u32(2)?; list.u32(3)?;
-    }
+    let mut list = enc.list()?;
+    list.u32(1)?;
+    list.u32(2)?;
+    list.u32(3)?;
+    list.finish()?;
+
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -209,10 +211,12 @@ fn test_list_scalars() -> R<()> {
 #[test]
 fn test_list_mixed_types() -> R<()> {
     let mut enc = Encoder::new();
-    {
-        let mut list = enc.list()?;
-        list.bool(true)?; list.str("test")?; list.u64(999)?;
-    }
+    let mut list = enc.list()?;
+    list.bool(true)?;
+    list.str("test")?;
+    list.u64(999)?;
+    list.finish()?;
+
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -227,15 +231,17 @@ fn test_list_mixed_types() -> R<()> {
 #[test]
 fn test_list_nested() -> R<()> {
     let mut enc = Encoder::new();
-    {
-        let mut outer = enc.list()?;
-        outer.u16(1)?;
-        {
-            let mut inner = outer.list()?;
-            inner.u16(2)?; inner.u16(3)?;
-        }
-        outer.u16(4)?;
-    }
+    let mut outer = enc.list()?;
+    outer.u16(1)?;
+
+    let mut inner = outer.list()?;
+    inner.u16(2)?;
+    inner.u16(3)?;
+    inner.finish()?;
+
+    outer.u16(4)?;
+    outer.finish()?;
+
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -257,9 +263,9 @@ fn test_list_nested() -> R<()> {
 #[test]
 fn test_list_empty() -> R<()> {
     let mut enc = Encoder::new();
-    {
-        let _list = enc.list()?;
-    }
+    let list = enc.list()?;
+    list.finish()?;
+
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -271,12 +277,11 @@ fn test_list_empty() -> R<()> {
 #[test]
 fn test_map_basic() -> R<()> {
     let mut enc = Encoder::new();
-    {
-        let mut map = enc.map()?;
-        map.entry("name", |e| e.str("Alice"))?;
-        map.key("age")?.u32(30);
-        map.key("active")?.bool(true);
-    }
+    let mut map = enc.map()?;
+    map.key("name")?.str("Alice")?;
+    map.key("age")?.u32(30)?;
+    map.key("active")?.bool(true)?;
+    map.finish()?;
 
     let bytes = enc.as_bytes();
     let mut r = Reader::new(bytes);
@@ -301,14 +306,14 @@ fn test_map_basic() -> R<()> {
 #[test]
 fn test_map_nested() -> R<()> {
     let mut enc = Encoder::new();
-    {
-        let mut map = enc.map()?;
-        map.key("outer")?.u32(1);
-        {
-            let mut inner = map.key("inner")?.map()?;
-            inner.key("nested")?.u32(2);
-        }
-    }
+    let mut map = enc.map()?;
+    map.key("outer")?.u32(1)?;
+
+    let mut inner = map.key("inner")?.map()?;
+    inner.key("nested")?.u32(2)?;
+    inner.finish()?;
+
+    map.finish()?;
 
     let bytes = enc.as_bytes();
     let mut r = Reader::new(bytes);
@@ -333,9 +338,9 @@ fn test_map_nested() -> R<()> {
 #[test]
 fn test_map_empty() -> R<()> {
     let mut enc = Encoder::new();
-    {
-        let _map = enc.map()?;
-    }
+    let map = enc.map()?;
+    map.finish()?;
+
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -347,12 +352,11 @@ fn test_map_empty() -> R<()> {
 #[test]
 fn test_array_u32() -> R<()> {
     let mut enc = Encoder::new();
-    {
-        let mut arr = enc.array(Tag::U32, 4)?;
-        arr.push(&[1, 0, 0, 0])?;
-        arr.push(&[2, 0, 0, 0])?;
-        arr.push(&[3, 0, 0, 0])?;
-    }
+    let mut arr = enc.array(Tag::U32, 4)?;
+    arr.push(&[1, 0, 0, 0])?;
+    arr.push(&[2, 0, 0, 0])?;
+    arr.push(&[3, 0, 0, 0])?;
+    arr.finish()?;
 
     let bytes = enc.as_bytes();
     let mut r = Reader::new(bytes);
@@ -362,9 +366,10 @@ fn test_array_u32() -> R<()> {
     assert_eq!(arr.stride(), 4);
     assert_eq!(arr.remaining(), 3);
 
-    assert_eq!(arr.next()?.unwrap(), &[1, 0, 0, 0]);
-    assert_eq!(arr.next()?.unwrap(), &[2, 0, 0, 0]);
-    assert_eq!(arr.next()?.unwrap(), &[3, 0, 0, 0]);
+    // Using .as_u32() to avoid PartialEq on ValueReader
+    assert_eq!(arr.next()?.unwrap().as_u32()?, 1);
+    assert_eq!(arr.next()?.unwrap().as_u32()?, 2);
+    assert_eq!(arr.next()?.unwrap().as_u32()?, 3);
     assert!(arr.next()?.is_none());
     Ok(())
 }
@@ -372,9 +377,9 @@ fn test_array_u32() -> R<()> {
 #[test]
 fn test_array_empty() -> R<()> {
     let mut enc = Encoder::new();
-    {
-        let _arr = enc.array(Tag::U16, 2)?;
-    }
+    let arr = enc.array(Tag::U16, 2)?;
+    arr.finish()?;
+
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -407,7 +412,7 @@ fn test_invalid_tag() {
 #[test]
 fn test_type_mismatch() -> R<()> {
     let mut enc = Encoder::new();
-    enc.u32(42);
+    enc.u32(42)?;
     let bytes = enc.as_bytes();
 
     let mut r = Reader::new(bytes);
@@ -442,7 +447,7 @@ fn test_blob_too_large() {
 #[should_panic(expected = "invalid stride: 0")]
 fn test_array_stride_zero() {
     let mut enc = Encoder::new();
-    enc.array(Tag::U32, 0);
+    let _ = enc.array(Tag::U32, 0);
 }
 
 #[test]
@@ -459,7 +464,7 @@ fn test_array_stride_mismatch() -> R<()> {
 #[test]
 fn test_streaming_incremental() -> R<()> {
     let mut enc = Encoder::new();
-    enc.u32(1234);
+    enc.u32(1234)?;
     let full_bytes = enc.as_bytes();
 
     let mut r = Reader::new(&full_bytes[..2]);
@@ -490,21 +495,22 @@ fn test_partial_string() -> R<()> {
 #[test]
 fn test_complex_structure() -> R<()> {
     let mut enc = Encoder::new();
+    let mut root_map = enc.map()?;
+    root_map.key("id")?.u64(12345)?;
+    root_map.key("name")?.str("test")?;
 
-    {
-        let mut root_map = enc.map()?;
-        root_map.key("id")?.u64(12345)?;
-        root_map.key("name")?.str("test")?;
-        {
-            let mut tags = root_map.key("tags")?.list()?;
-            tags.str("rust")?; tags.str("binary")?; tags.str("serialization")?;
-        }
-        {
-            let mut meta = root_map.key("metadata")?.map()?;
-            meta.key("version")?.u32(1)?;
-            meta.key("active")?.bool(true)?;
-        }
-    }
+    let mut tags = root_map.key("tags")?.list()?;
+    tags.str("rust")?;
+    tags.str("binary")?;
+    tags.str("serialization")?;
+    tags.finish()?;
+
+    let mut meta = root_map.key("metadata")?.map()?;
+    meta.key("version")?.u32(1)?;
+    meta.key("active")?.bool(true)?;
+    meta.finish()?;
+
+    root_map.finish()?;
 
     let bytes = enc.as_bytes();
 
@@ -548,11 +554,10 @@ fn test_complex_structure() -> R<()> {
 #[test]
 fn test_list_drop_patches_len() -> R<()> {
     let mut enc = Encoder::new();
-    {
-        let mut list = enc.list()?;
-        list.u32(1)?;
-        list.u32(2)?;
-    }
+    let mut list = enc.list()?;
+    list.u32(1)?;
+    list.u32(2)?;
+    list.finish()?;
 
     let bytes = enc.as_bytes();
     let mut r = Reader::new(&bytes);
@@ -615,12 +620,11 @@ fn test_round_trip_random_ints() -> R<()> {
     let mut enc = Encoder::new();
     let values: Vec<i32> = (0..100).map(|i| (i * 7919) % 1000 - 500).collect();
 
-    {
-        let mut list = enc.list()?;
-        for &v in &values {
-            list.i32(v)?;
-        }
+    let mut list = enc.list()?;
+    for &v in &values {
+        list.i32(v)?;
     }
+    list.finish()?;
 
     let bytes = enc.as_bytes();
     let mut r = Reader::new(&bytes);
@@ -636,19 +640,15 @@ fn test_round_trip_random_ints() -> R<()> {
 fn test_deeply_nested_lists() -> R<()> {
     let mut enc = Encoder::new();
 
-    {
-        let mut l1 = enc.list()?;
-        {
-            let mut l2 = l1.list()?;
-            {
-                let mut l3 = l2.list()?;
-                {
-                    let mut l4 = l3.list()?;
-                    l4.u32(42)?;
-                }
-            }
-        }
-    }
+    let mut l1 = enc.list()?;
+    let mut l2 = l1.list()?;
+    let mut l3 = l2.list()?;
+    let mut l4 = l3.list()?;
+    l4.u32(42)?;
+    l4.finish()?;
+    l3.finish()?;
+    l2.finish()?;
+    l1.finish()?;
 
     let bytes = enc.as_bytes();
     let mut r = Reader::new(&bytes);
@@ -668,19 +668,21 @@ fn test_deeply_nested_lists() -> R<()> {
 fn test_mixed_container_types() -> R<()> {
     let mut enc = Encoder::new();
 
-    {
-        let mut list = enc.list()?;
-        {
-            let mut map = list.map()?;
-            map.key("coords")?.list()?.u16(100)?.u16(200)?;
-        }
-        {
-            let mut arr = list.array(Tag::U8, 1)?;
-            arr.push(&[1])?;
-            arr.push(&[2])?;
-            arr.push(&[3])?;
-        }
-    }
+    let mut list = enc.list()?;
+
+    let mut map = list.map()?;
+    let mut coords = map.key("coords")?.list()?;
+    coords.u16(100)?.u16(200)?;
+    coords.finish()?;
+    map.finish()?;
+
+    let mut arr = list.array(Tag::U8, 1)?;
+    arr.push(&[1])?;
+    arr.push(&[2])?;
+    arr.push(&[3])?;
+    arr.finish()?;
+
+    list.finish()?;
 
     let bytes = enc.as_bytes();
     let mut r = Reader::new(&bytes);
@@ -696,9 +698,9 @@ fn test_mixed_container_types() -> R<()> {
     } else { panic!(); }
 
     if let ValueReader::Array(mut arr) = list.next()?.unwrap() {
-        assert_eq!(arr.next()?.unwrap(), &[1]);
-        assert_eq!(arr.next()?.unwrap(), &[2]);
-        assert_eq!(arr.next()?.unwrap(), &[3]);
+        assert_eq!(arr.next()?.unwrap().as_u8()?, 1);
+        assert_eq!(arr.next()?.unwrap().as_u8()?, 2);
+        assert_eq!(arr.next()?.unwrap().as_u8()?, 3);
     } else { panic!(); }
     Ok(())
 }
@@ -706,20 +708,19 @@ fn test_mixed_container_types() -> R<()> {
 #[test]
 fn test_all_numeric_types_in_list() -> R<()> {
     let mut enc = Encoder::new();
-    {
-        let mut list = enc.list()?;
-        list.bool(true)?;
-        list.u8(255)?;
-        list.i8(-128)?;
-        list.u16(65535)?;
-        list.i16(-32768)?;
-        list.u32(4000000)?;
-        list.i32(-2000000)?;
-        list.u64(1000000000000)?;
-        list.i64(-500000000000)?;
-        list.f32(3.14)?;
-        list.f64(2.71828)?;
-    }
+    let mut list = enc.list()?;
+    list.bool(true)?;
+    list.u8(255)?;
+    list.i8(-128)?;
+    list.u16(65535)?;
+    list.i16(-32768)?;
+    list.u32(4000000)?;
+    list.i32(-2000000)?;
+    list.u64(1000000000000)?;
+    list.i64(-500000000000)?;
+    list.f32(3.14)?;
+    list.f64(2.71828)?;
+    list.finish()?;
 
     let bytes = enc.as_bytes();
     let mut r = Reader::new(&bytes);
@@ -742,12 +743,11 @@ fn test_all_numeric_types_in_list() -> R<()> {
 #[test]
 fn test_sparse_array_as_map() -> R<()> {
     let mut enc = Encoder::new();
-    {
-        let mut map = enc.map()?;
-        map.key("0")?.u32(100);
-        map.key("1000")?.u32(200);
-        map.key("1000000")?.u32(300);
-    }
+    let mut map = enc.map()?;
+    map.key("0")?.u32(100)?;
+    map.key("1000")?.u32(200)?;
+    map.key("1000000")?.u32(300)?;
+    map.finish()?;
 
     let bytes = enc.as_bytes();
     let mut r = Reader::new(&bytes);
@@ -788,9 +788,9 @@ fn test_empty_everything() -> R<()> {
     enc.str("")?;
     enc.bytes(&[])?;
     enc.record_blob(&[])?;
-    { let _list = enc.list(); }
-    { let _map = enc.map(); }
-    { let _arr = enc.array(Tag::U8, 1)?; }
+    enc.list()?.finish()?;
+    enc.map()?.finish()?;
+    enc.array(Tag::U8, 1)?.finish()?;
 
     let bytes = enc.as_bytes();
     let mut r = Reader::new(&bytes);
@@ -831,19 +831,19 @@ fn test_array_of_structs_layout() -> R<()> {
     let mut enc = Encoder::new();
     let stride = 8;
 
-    {
-        let mut arr = enc.array(Tag::Struct, stride)?;
+    let mut arr = enc.array(Tag::Struct, stride)?;
 
-        let mut rec = arr.fixed_record();
-        rec.u32(1)?;
-        rec.u32(2)?;
-        rec.finish()?;
+    let mut rec = arr.fixed_record();
+    rec.u32(1)?;
+    rec.u32(2)?;
+    rec.finish()?;
 
-        let mut rec = arr.fixed_record();
-        rec.u32(10)?;
-        rec.u32(20)?;
-        rec.finish()?;
-    }
+    let mut rec = arr.fixed_record();
+    rec.u32(10)?;
+    rec.u32(20)?;
+    rec.finish()?;
+
+    arr.finish()?;
 
     let bytes = enc.as_bytes();
 
@@ -853,15 +853,17 @@ fn test_array_of_structs_layout() -> R<()> {
     assert_eq!(arr.item_tag(), Tag::Struct);
     assert_eq!(arr.stride(), 8);
 
-    let data1 = arr.next()?.unwrap();
-    let mut r1 = RecordReader::new(data1);
-    assert_eq!(r1.u32()?, 1);
-    assert_eq!(r1.u32()?, 2);
+    if let ValueReader::Struct(data1) = arr.next()?.unwrap() {
+        let mut r1 = RecordReader::new(data1);
+        assert_eq!(r1.u32()?, 1);
+        assert_eq!(r1.u32()?, 2);
+    } else { panic!("Expected Struct"); }
 
-    let data2 = arr.next()?.unwrap();
-    let mut r2 = RecordReader::new(data2);
-    assert_eq!(r2.u32()?, 10);
-    assert_eq!(r2.u32()?, 20);
+    if let ValueReader::Struct(data2) = arr.next()?.unwrap() {
+        let mut r2 = RecordReader::new(data2);
+        assert_eq!(r2.u32()?, 10);
+        assert_eq!(r2.u32()?, 20);
+    } else { panic!("Expected Struct"); }
 
     Ok(())
 }

@@ -1,9 +1,14 @@
-use super::types::{Tag, Error, Result};
-use super::macros::{
-    encode_root_multibyte, encode_array_multibyte, encode_record_multibyte,
-    encode_wrapper_api, encode_wrapper_method, for_each_multibyte_scalar
-};
 use std::mem;
+
+use super::types::Result;
+use super::types::Error;
+use super::types::Tag;
+use super::macros::encode_wrapper_method;
+use super::macros::for_each_multibyte_scalar;
+use super::macros::encode_wrapper_api;
+use super::macros::encode_record_multibyte;
+use super::macros::encode_array_multibyte;
+use super::macros::encode_root_multibyte;
 
 /// A growable buffer that encodes data into the NeoPack format.
 pub struct Encoder {
@@ -115,7 +120,7 @@ impl Encoder {
         if self.buf.len() >= u32::MAX as usize {
             return Err(Error::ContainerFull);
         }
-        
+
         self.write_tag(Tag::Array);
 
         let len_offset = self.buf.len();
@@ -189,12 +194,6 @@ impl<'a> PatchScope<'a> {
     }
 }
 
-impl<'a> Drop for PatchScope<'a> {
-    fn drop(&mut self) {
-        self.flush().expect("container exceeded u32::MAX bytes");
-    }
-}
-
 pub struct ListEncoder<'a> {
     scope: PatchScope<'a>,
 }
@@ -230,15 +229,6 @@ impl<'a> MapEncoder<'a> {
         Ok(MapValueEncoder {
             parent: self.scope.parent,
         })
-    }
-
-    pub fn entry<F>(&mut self, key: &str, f: F) -> Result<&mut Self>
-    where
-        F: FnOnce(MapValueEncoder<'_>) -> Result<()>,
-    {
-        let val_enc = self.key(key)?;
-        f(val_enc)?;
-        Ok(self)
     }
 
     pub fn finish(self) -> Result<&'a mut Encoder> {
@@ -339,9 +329,9 @@ impl<'a> ArrayEncoder<'a> {
     for_each_multibyte_scalar!(encode_array_multibyte, ());
 
     /// Starts writing a fixed-size record into the array.
-    pub fn fixed_record(&mut self) -> FixedRecordEncoder<'_, 'a> {
+    pub fn fixed_record(&mut self) -> RecordBodyEncoder<'_, 'a> {
         let start = self.scope.parent.buf.len();
-        FixedRecordEncoder {
+        RecordBodyEncoder {
             parent: self,
             start,
         }
@@ -352,12 +342,12 @@ impl<'a> ArrayEncoder<'a> {
     }
 }
 
-pub struct FixedRecordEncoder<'p, 'a> {
+pub struct RecordBodyEncoder<'p, 'a> {
     parent: &'p mut ArrayEncoder<'a>,
     start: usize,
 }
 
-impl<'p, 'a> FixedRecordEncoder<'p, 'a> {
+impl<'p, 'a> RecordBodyEncoder<'p, 'a> {
     pub fn push(&mut self, data: &[u8]) -> Result<&mut Self> {
         // We bypass stride checks until finish
         unsafe { self.parent.push_unchecked(data)?; }
@@ -387,7 +377,7 @@ impl<'p, 'a> FixedRecordEncoder<'p, 'a> {
 
     for_each_multibyte_scalar!(encode_record_multibyte, ());
 
-    pub fn finish(self) -> Result<&'p mut ArrayEncoder<'a>> 
+    pub fn finish(self) -> Result<&'p mut ArrayEncoder<'a>>
     where
         'a: 'p,
     {
