@@ -191,7 +191,7 @@ fn test_struct_blob_roundtrip() -> R<()> {
 fn test_list_scalars() -> R<()> {
     let mut enc = Encoder::new();
     {
-        let mut list = enc.list();
+        let mut list = enc.list()?;
         list.u32(1)?; list.u32(2)?; list.u32(3)?;
     }
     let bytes = enc.as_bytes();
@@ -210,7 +210,7 @@ fn test_list_scalars() -> R<()> {
 fn test_list_mixed_types() -> R<()> {
     let mut enc = Encoder::new();
     {
-        let mut list = enc.list();
+        let mut list = enc.list()?;
         list.bool(true)?; list.str("test")?; list.u64(999)?;
     }
     let bytes = enc.as_bytes();
@@ -228,7 +228,7 @@ fn test_list_mixed_types() -> R<()> {
 fn test_list_nested() -> R<()> {
     let mut enc = Encoder::new();
     {
-        let mut outer = enc.list();
+        let mut outer = enc.list()?;
         outer.u16(1)?;
         {
             let mut inner = outer.list()?;
@@ -258,7 +258,7 @@ fn test_list_nested() -> R<()> {
 fn test_list_empty() -> R<()> {
     let mut enc = Encoder::new();
     {
-        let _list = enc.list();
+        let _list = enc.list()?;
     }
     let bytes = enc.as_bytes();
 
@@ -272,7 +272,7 @@ fn test_list_empty() -> R<()> {
 fn test_map_basic() -> R<()> {
     let mut enc = Encoder::new();
     {
-        let mut map = enc.map();
+        let mut map = enc.map()?;
         map.entry("name", |e| e.str("Alice"))?;
         map.key("age")?.u32(30);
         map.key("active")?.bool(true);
@@ -302,7 +302,7 @@ fn test_map_basic() -> R<()> {
 fn test_map_nested() -> R<()> {
     let mut enc = Encoder::new();
     {
-        let mut map = enc.map();
+        let mut map = enc.map()?;
         map.key("outer")?.u32(1);
         {
             let mut inner = map.key("inner")?.map()?;
@@ -334,7 +334,7 @@ fn test_map_nested() -> R<()> {
 fn test_map_empty() -> R<()> {
     let mut enc = Encoder::new();
     {
-        let _map = enc.map();
+        let _map = enc.map()?;
     }
     let bytes = enc.as_bytes();
 
@@ -439,12 +439,10 @@ fn test_blob_too_large() {
 }
 
 #[test]
+#[should_panic(expected = "invalid stride: 0")]
 fn test_array_stride_zero() {
     let mut enc = Encoder::new();
-    match enc.array(Tag::U32, 0) {
-        Err(Error::InvalidStride(0)) => {}
-        _ => panic!("Expected InvalidStride error"),
-    }
+    enc.array(Tag::U32, 0);
 }
 
 #[test]
@@ -494,8 +492,8 @@ fn test_complex_structure() -> R<()> {
     let mut enc = Encoder::new();
 
     {
-        let mut root_map = enc.map();
-        root_map.key("id")?.u64(12345);
+        let mut root_map = enc.map()?;
+        root_map.key("id")?.u64(12345)?;
         root_map.key("name")?.str("test")?;
         {
             let mut tags = root_map.key("tags")?.list()?;
@@ -503,8 +501,8 @@ fn test_complex_structure() -> R<()> {
         }
         {
             let mut meta = root_map.key("metadata")?.map()?;
-            meta.key("version")?.u32(1);
-            meta.key("active")?.bool(true);
+            meta.key("version")?.u32(1)?;
+            meta.key("active")?.bool(true)?;
         }
     }
 
@@ -551,7 +549,7 @@ fn test_complex_structure() -> R<()> {
 fn test_list_drop_patches_len() -> R<()> {
     let mut enc = Encoder::new();
     {
-        let mut list = enc.list();
+        let mut list = enc.list()?;
         list.u32(1)?;
         list.u32(2)?;
     }
@@ -618,7 +616,7 @@ fn test_round_trip_random_ints() -> R<()> {
     let values: Vec<i32> = (0..100).map(|i| (i * 7919) % 1000 - 500).collect();
 
     {
-        let mut list = enc.list();
+        let mut list = enc.list()?;
         for &v in &values {
             list.i32(v)?;
         }
@@ -639,7 +637,7 @@ fn test_deeply_nested_lists() -> R<()> {
     let mut enc = Encoder::new();
 
     {
-        let mut l1 = enc.list();
+        let mut l1 = enc.list()?;
         {
             let mut l2 = l1.list()?;
             {
@@ -671,7 +669,7 @@ fn test_mixed_container_types() -> R<()> {
     let mut enc = Encoder::new();
 
     {
-        let mut list = enc.list();
+        let mut list = enc.list()?;
         {
             let mut map = list.map()?;
             map.key("coords")?.list()?.u16(100)?.u16(200)?;
@@ -709,7 +707,7 @@ fn test_mixed_container_types() -> R<()> {
 fn test_all_numeric_types_in_list() -> R<()> {
     let mut enc = Encoder::new();
     {
-        let mut list = enc.list();
+        let mut list = enc.list()?;
         list.bool(true)?;
         list.u8(255)?;
         list.i8(-128)?;
@@ -745,7 +743,7 @@ fn test_all_numeric_types_in_list() -> R<()> {
 fn test_sparse_array_as_map() -> R<()> {
     let mut enc = Encoder::new();
     {
-        let mut map = enc.map();
+        let mut map = enc.map()?;
         map.key("0")?.u32(100);
         map.key("1000")?.u32(200);
         map.key("1000000")?.u32(300);

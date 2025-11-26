@@ -41,10 +41,13 @@ macro_rules! for_each_multibyte_scalar {
 macro_rules! encode_root_multibyte {
     ($name:ident, $as_name:ident, $ty:ty, $tag:expr, $var:ident, $ctx:tt) => {
         #[inline]
-        pub fn $name(&mut self, v: $ty) -> &mut Self {
+        pub fn $name(&mut self, v: $ty) -> crate::neopack::types::Result<&mut Self> {
+            if self.buf.len() >= u32::MAX as usize {
+                return Err(crate::neopack::types::Error::ContainerFull);
+            }
             self.write_tag($tag);
             self.buf.extend_from_slice(&v.to_le_bytes());
-            self
+            Ok(self)
         }
     };
 }
@@ -79,7 +82,7 @@ macro_rules! encode_wrapper_method {
         #[inline]
         pub fn $name($($recv)+, v: $ty) -> crate::neopack::types::Result<$ret> {
             $pre
-            let _ = $par.$name(v);
+            $par.$name(v)?;
             Ok($post)
         }
     };
@@ -110,12 +113,12 @@ macro_rules! encode_wrapper_api {
 
         pub fn list($($recv)+) -> crate::neopack::types::Result<ListEncoder<$lt>> {
             $pre
-            Ok($parent.list())
+            $parent.list()
         }
 
         pub fn map($($recv)+) -> crate::neopack::types::Result<MapEncoder<$lt>> {
             $pre
-            Ok($parent.map())
+            $parent.map()
         }
 
         pub fn array($($recv)+, item_tag: crate::neopack::types::Tag, stride: usize) -> crate::neopack::types::Result<ArrayEncoder<$lt>> {
@@ -125,7 +128,7 @@ macro_rules! encode_wrapper_api {
 
         pub fn record($($recv)+) -> crate::neopack::types::Result<RecordEncoder<$lt>> {
             $pre
-            Ok($parent.record())
+            $parent.record()
         }
     };
 }

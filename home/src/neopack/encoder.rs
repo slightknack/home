@@ -48,24 +48,33 @@ impl Encoder {
     }
 
     #[inline]
-    pub fn bool(&mut self, v: bool) -> &mut Self {
+    pub fn bool(&mut self, v: bool) -> Result<&mut Self> {
+        if self.buf.len() >= u32::MAX as usize {
+            return Err(Error::ContainerFull);
+        }
         self.write_tag(Tag::Bool);
         self.buf.push(v as u8);
-        self
+        Ok(self)
     }
 
     #[inline]
-    pub fn u8(&mut self, v: u8) -> &mut Self {
+    pub fn u8(&mut self, v: u8) -> Result<&mut Self> {
+        if self.buf.len() >= u32::MAX as usize {
+            return Err(Error::ContainerFull);
+        }
         self.write_tag(Tag::U8);
         self.buf.push(v);
-        self
+        Ok(self)
     }
 
     #[inline]
-    pub fn i8(&mut self, v: i8) -> &mut Self {
+    pub fn i8(&mut self, v: i8) -> Result<&mut Self> {
+        if self.buf.len() >= u32::MAX as usize {
+            return Err(Error::ContainerFull);
+        }
         self.write_tag(Tag::S8);
         self.buf.push(v as u8);
-        self
+        Ok(self)
     }
 
     for_each_multibyte_scalar!(encode_root_multibyte, ());
@@ -85,20 +94,28 @@ impl Encoder {
         Ok(self)
     }
 
-    pub fn list(&mut self) -> ListEncoder<'_> {
+    pub fn list(&mut self) -> Result<ListEncoder<'_>> {
+        if self.buf.len() >= u32::MAX as usize {
+            return Err(Error::ContainerFull);
+        }
         self.write_tag(Tag::List);
-        ListEncoder::new(self)
+        Ok(ListEncoder::new(self))
     }
 
-    pub fn map(&mut self) -> MapEncoder<'_> {
+    pub fn map(&mut self) -> Result<MapEncoder<'_>> {
+        if self.buf.len() >= u32::MAX as usize {
+            return Err(Error::ContainerFull);
+        }
         self.write_tag(Tag::Map);
-        MapEncoder::new(self)
+        Ok(MapEncoder::new(self))
     }
 
     pub fn array(&mut self, item_tag: Tag, stride: usize) -> Result<ArrayEncoder<'_>> {
-        if stride == 0 || stride > u32::MAX as usize {
-            return Err(Error::InvalidStride(stride));
+        assert!(stride > 0 && stride <= u32::MAX as usize, "invalid stride: {}", stride);
+        if self.buf.len() >= u32::MAX as usize {
+            return Err(Error::ContainerFull);
         }
+        
         self.write_tag(Tag::Array);
 
         let len_offset = self.buf.len();
@@ -116,11 +133,14 @@ impl Encoder {
     }
 
     /// Starts a standard Record (opaque struct with a Tag and Length header).
-    pub fn record(&mut self) -> RecordEncoder<'_> {
-        self.write_tag(Tag::Struct);
-        RecordEncoder {
-            scope: PatchScope::new(self)
+    pub fn record(&mut self) -> Result<RecordEncoder<'_>> {
+        if self.buf.len() >= u32::MAX as usize {
+            return Err(Error::ContainerFull);
         }
+        self.write_tag(Tag::Struct);
+        Ok(RecordEncoder {
+            scope: PatchScope::new(self)
+        })
     }
 }
 
@@ -142,25 +162,36 @@ impl<'a> PatchScope<'a> {
         Self { parent, len_offset, body_start_offset }
     }
 
-    fn flush(&mut self) {
+    fn check_size(&self) -> Result<()> {
+        let current_len = self.parent.buf.len();
+        let body_len = current_len.saturating_sub(self.body_start_offset);
+        if body_len > u32::MAX as usize {
+            return Err(Error::ContainerFull);
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.check_size()?;
         let current_len = self.parent.buf.len();
         let body_len = current_len.saturating_sub(self.body_start_offset);
         let len_bytes = (body_len as u32).to_le_bytes();
         let dest = &mut self.parent.buf[self.len_offset..self.len_offset + 4];
         dest.copy_from_slice(&len_bytes);
+        Ok(())
     }
 
-    fn finish(mut self) -> &'a mut Encoder {
-        self.flush();
+    fn finish(mut self) -> Result<&'a mut Encoder> {
+        self.flush()?;
         let parent_ptr = self.parent as *mut Encoder;
         mem::forget(self);
-        unsafe { &mut *parent_ptr }
+        Ok(unsafe { &mut *parent_ptr })
     }
 }
 
 impl<'a> Drop for PatchScope<'a> {
     fn drop(&mut self) {
-        self.flush();
+        self.flush().expect("container exceeded u32::MAX bytes");
     }
 }
 
@@ -179,7 +210,7 @@ impl<'a> ListEncoder<'a> {
         post: self
     );
 
-    pub fn finish(self) -> &'a mut Encoder {
+    pub fn finish(self) -> Result<&'a mut Encoder> {
         self.scope.finish()
     }
 }
@@ -210,7 +241,7 @@ impl<'a> MapEncoder<'a> {
         Ok(self)
     }
 
-    pub fn finish(self) -> &'a mut Encoder {
+    pub fn finish(self) -> Result<&'a mut Encoder> {
         self.scope.finish()
     }
 }
@@ -261,7 +292,7 @@ impl<'a> RecordEncoder<'a> {
 
     for_each_multibyte_scalar!(encode_record_multibyte, ());
 
-    pub fn finish(self) -> &'a mut Encoder {
+    pub fn finish(self) -> Result<&'a mut Encoder> {
         self.scope.finish()
     }
 }
@@ -316,7 +347,7 @@ impl<'a> ArrayEncoder<'a> {
         }
     }
 
-    pub fn finish(self) -> &'a mut Encoder {
+    pub fn finish(self) -> Result<&'a mut Encoder> {
         self.scope.finish()
     }
 }

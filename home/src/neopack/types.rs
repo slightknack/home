@@ -66,7 +66,6 @@ pub enum Error {
     Malformed,
     BlobTooLarge(usize),
     ContainerFull,
-    InvalidStride(usize),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
