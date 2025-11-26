@@ -1,7 +1,11 @@
-//! Encoder for neopack binary format
-
 use super::types::{Tag, Error, Result};
+use super::macros::{
+    encode_root_multibyte, encode_array_multibyte, encode_record_multibyte,
+    encode_wrapper_api, encode_wrapper_method, for_each_multibyte_scalar
+};
+use std::mem;
 
+/// A growable buffer that encodes data into the NeoPack format.
 pub struct Encoder {
     pub buf: Vec<u8>,
 }
@@ -12,9 +16,7 @@ impl Encoder {
     }
 
     pub fn with_capacity(cap: usize) -> Self {
-        Self {
-            buf: Vec::with_capacity(cap),
-        }
+        Self { buf: Vec::with_capacity(cap) }
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -25,92 +27,49 @@ impl Encoder {
         self.buf
     }
 
+    #[inline(always)]
     fn write_tag(&mut self, tag: Tag) {
         self.buf.push(tag as u8);
     }
 
-    fn write_u16(&mut self, v: u16) {
+    #[inline(always)]
+    fn write_u32_raw(&mut self, v: u32) {
         self.buf.extend_from_slice(&v.to_le_bytes());
     }
 
     fn write_blob(&mut self, tag: Tag, data: &[u8]) -> Result<()> {
-        if data.len() > u16::MAX as usize {
+        if data.len() > u32::MAX as usize {
             return Err(Error::BlobTooLarge(data.len()));
         }
         self.write_tag(tag);
-        self.write_u16(data.len() as u16);
+        self.write_u32_raw(data.len() as u32);
         self.buf.extend_from_slice(data);
         Ok(())
     }
 
-    // Scalars
+    #[inline]
     pub fn bool(&mut self, v: bool) -> &mut Self {
         self.write_tag(Tag::Bool);
-        self.buf.push(if v { 1 } else { 0 });
+        self.buf.push(v as u8);
         self
     }
 
+    #[inline]
     pub fn u8(&mut self, v: u8) -> &mut Self {
         self.write_tag(Tag::U8);
         self.buf.push(v);
         self
     }
 
+    #[inline]
     pub fn i8(&mut self, v: i8) -> &mut Self {
         self.write_tag(Tag::S8);
         self.buf.push(v as u8);
         self
     }
 
-    pub fn u16(&mut self, v: u16) -> &mut Self {
-        self.write_tag(Tag::U16);
-        self.write_u16(v);
-        self
-    }
+    for_each_multibyte_scalar!(encode_root_multibyte, ());
 
-    pub fn i16(&mut self, v: i16) -> &mut Self {
-        self.write_tag(Tag::S16);
-        self.buf.extend_from_slice(&v.to_le_bytes());
-        self
-    }
-
-    pub fn u32(&mut self, v: u32) -> &mut Self {
-        self.write_tag(Tag::U32);
-        self.buf.extend_from_slice(&v.to_le_bytes());
-        self
-    }
-
-    pub fn i32(&mut self, v: i32) -> &mut Self {
-        self.write_tag(Tag::S32);
-        self.buf.extend_from_slice(&v.to_le_bytes());
-        self
-    }
-
-    pub fn u64(&mut self, v: u64) -> &mut Self {
-        self.write_tag(Tag::U64);
-        self.buf.extend_from_slice(&v.to_le_bytes());
-        self
-    }
-
-    pub fn i64(&mut self, v: i64) -> &mut Self {
-        self.write_tag(Tag::S64);
-        self.buf.extend_from_slice(&v.to_le_bytes());
-        self
-    }
-
-    pub fn f32(&mut self, v: f32) -> &mut Self {
-        self.write_tag(Tag::F32);
-        self.buf.extend_from_slice(&v.to_le_bytes());
-        self
-    }
-
-    pub fn f64(&mut self, v: f64) -> &mut Self {
-        self.write_tag(Tag::F64);
-        self.buf.extend_from_slice(&v.to_le_bytes());
-        self
-    }
-
-    // Blobs
     pub fn str(&mut self, v: &str) -> Result<&mut Self> {
         self.write_blob(Tag::String, v.as_bytes())?;
         Ok(self)
@@ -121,383 +80,291 @@ impl Encoder {
         Ok(self)
     }
 
-    pub fn struct_blob(&mut self, v: &[u8]) -> Result<&mut Self> {
+    pub fn record_blob(&mut self, v: &[u8]) -> Result<&mut Self> {
         self.write_blob(Tag::Struct, v)?;
         Ok(self)
     }
 
-    // Container Starters
     pub fn list(&mut self) -> ListEncoder<'_> {
-        let start = self.buf.len();
         self.write_tag(Tag::List);
-        self.write_u16(0); // Placeholder count
-        ListEncoder {
-            parent: self,
-            start,
-            count: 0,
-        }
+        ListEncoder::new(self)
     }
 
     pub fn map(&mut self) -> MapEncoder<'_> {
-        let start = self.buf.len();
         self.write_tag(Tag::Map);
-        self.write_u16(0); // Placeholder count
-        MapEncoder {
-            parent: self,
-            start,
-            count: 0,
-        }
+        MapEncoder::new(self)
     }
 
     pub fn array(&mut self, item_tag: Tag, stride: usize) -> Result<ArrayEncoder<'_>> {
-        if stride == 0 {
-            return Err(Error::InvalidStride(0));
-        }
-        if stride > u16::MAX as usize {
+        if stride == 0 || stride > u32::MAX as usize {
             return Err(Error::InvalidStride(stride));
         }
-        let start = self.buf.len();
         self.write_tag(Tag::Array);
+
+        let len_offset = self.buf.len();
+        self.write_u32_raw(0); // Placeholder for ByteLen
+
         self.buf.push(item_tag as u8);
-        self.write_u16(stride as u16);
-        self.write_u16(0); // Placeholder count
+        self.write_u32_raw(stride as u32);
+
+        let body_start = len_offset + 4;
+
         Ok(ArrayEncoder {
-            parent: self,
-            start,
+            scope: PatchScope::manual(self, len_offset, body_start),
             stride,
-            count: 0,
         })
+    }
+
+    /// Starts a standard Record (opaque struct with a Tag and Length header).
+    pub fn record(&mut self) -> RecordEncoder<'_> {
+        self.write_tag(Tag::Struct);
+        RecordEncoder {
+            scope: PatchScope::new(self)
+        }
+    }
+}
+
+struct PatchScope<'a> {
+    parent: &'a mut Encoder,
+    len_offset: usize,
+    body_start_offset: usize,
+}
+
+impl<'a> PatchScope<'a> {
+    fn new(parent: &'a mut Encoder) -> Self {
+        let len_offset = parent.buf.len();
+        parent.buf.extend_from_slice(&[0; 4]);
+        let body_start_offset = parent.buf.len();
+        Self { parent, len_offset, body_start_offset }
+    }
+
+    fn manual(parent: &'a mut Encoder, len_offset: usize, body_start_offset: usize) -> Self {
+        Self { parent, len_offset, body_start_offset }
+    }
+
+    fn flush(&mut self) {
+        let current_len = self.parent.buf.len();
+        let body_len = current_len.saturating_sub(self.body_start_offset);
+        let len_bytes = (body_len as u32).to_le_bytes();
+        let dest = &mut self.parent.buf[self.len_offset..self.len_offset + 4];
+        dest.copy_from_slice(&len_bytes);
+    }
+
+    fn finish(mut self) -> &'a mut Encoder {
+        self.flush();
+        let parent_ptr = self.parent as *mut Encoder;
+        mem::forget(self);
+        unsafe { &mut *parent_ptr }
+    }
+}
+
+impl<'a> Drop for PatchScope<'a> {
+    fn drop(&mut self) {
+        self.flush();
     }
 }
 
 pub struct ListEncoder<'a> {
-    pub parent: &'a mut Encoder,
-    pub start: usize,
-    pub count: u16,
+    scope: PatchScope<'a>,
 }
 
 impl<'a> ListEncoder<'a> {
-    fn inc_count(&mut self) -> Result<()> {
-        self.count = self.count.checked_add(1)
-            .ok_or(Error::ContainerFull)?;
-        Ok(())
+    fn new(parent: &'a mut Encoder) -> Self {
+        Self { scope: PatchScope::new(parent) }
     }
 
-    pub fn bool(&mut self, v: bool) -> Result<&mut Self> {
-        self.inc_count()?;
-        self.parent.bool(v);
-        Ok(self)
-    }
-
-    pub fn u8(&mut self, v: u8) -> Result<&mut Self> {
-        self.inc_count()?;
-        self.parent.u8(v);
-        Ok(self)
-    }
-
-    pub fn i8(&mut self, v: i8) -> Result<&mut Self> {
-        self.inc_count()?;
-        self.parent.i8(v);
-        Ok(self)
-    }
-
-    pub fn u16(&mut self, v: u16) -> Result<&mut Self> {
-        self.inc_count()?;
-        self.parent.u16(v);
-        Ok(self)
-    }
-
-    pub fn i16(&mut self, v: i16) -> Result<&mut Self> {
-        self.inc_count()?;
-        self.parent.i16(v);
-        Ok(self)
-    }
-
-    pub fn u32(&mut self, v: u32) -> Result<&mut Self> {
-        self.inc_count()?;
-        self.parent.u32(v);
-        Ok(self)
-    }
-
-    pub fn i32(&mut self, v: i32) -> Result<&mut Self> {
-        self.inc_count()?;
-        self.parent.i32(v);
-        Ok(self)
-    }
-
-    pub fn u64(&mut self, v: u64) -> Result<&mut Self> {
-        self.inc_count()?;
-        self.parent.u64(v);
-        Ok(self)
-    }
-
-    pub fn i64(&mut self, v: i64) -> Result<&mut Self> {
-        self.inc_count()?;
-        self.parent.i64(v);
-        Ok(self)
-    }
-
-    pub fn f32(&mut self, v: f32) -> Result<&mut Self> {
-        self.inc_count()?;
-        self.parent.f32(v);
-        Ok(self)
-    }
-
-    pub fn f64(&mut self, v: f64) -> Result<&mut Self> {
-        self.inc_count()?;
-        self.parent.f64(v);
-        Ok(self)
-    }
-
-    pub fn str(&mut self, v: &str) -> Result<&mut Self> {
-        self.inc_count()?;
-        self.parent.str(v)?;
-        Ok(self)
-    }
-
-    pub fn bytes(&mut self, v: &[u8]) -> Result<&mut Self> {
-        self.inc_count()?;
-        self.parent.bytes(v)?;
-        Ok(self)
-    }
-
-    pub fn struct_blob(&mut self, v: &[u8]) -> Result<&mut Self> {
-        self.inc_count()?;
-        self.parent.struct_blob(v)?;
-        Ok(self)
-    }
-
-    pub fn list(&mut self) -> Result<ListEncoder<'_>> {
-        self.inc_count()?;
-        Ok(self.parent.list())
-    }
-
-    pub fn map(&mut self) -> Result<MapEncoder<'_>> {
-        self.inc_count()?;
-        Ok(self.parent.map())
-    }
-
-    pub fn array(&mut self, item_tag: Tag, stride: usize) -> Result<ArrayEncoder<'_>> {
-        self.inc_count()?;
-        self.parent.array(item_tag, stride)
-    }
+    encode_wrapper_api!([&mut self], &mut Self, '_;
+        parent: self.scope.parent;
+        pre: {};
+        post: self
+    );
 
     pub fn finish(self) -> &'a mut Encoder {
-        // Patch count before returning
-        let count_bytes = self.count.to_le_bytes();
-        self.parent.buf[self.start + 1] = count_bytes[0];
-        self.parent.buf[self.start + 2] = count_bytes[1];
-        let parent_ptr = self.parent as *mut Encoder;
-        std::mem::forget(self);
-        unsafe { &mut *parent_ptr }
-    }
-}
-
-impl<'a> Drop for ListEncoder<'a> {
-    fn drop(&mut self) {
-        // Patch count at start + 1 (after tag)
-        let count_bytes = self.count.to_le_bytes();
-        self.parent.buf[self.start + 1] = count_bytes[0];
-        self.parent.buf[self.start + 2] = count_bytes[1];
+        self.scope.finish()
     }
 }
 
 pub struct MapEncoder<'a> {
-    pub parent: &'a mut Encoder,
-    pub start: usize,
-    pub count: u16,
+    scope: PatchScope<'a>,
 }
 
 impl<'a> MapEncoder<'a> {
-    /// Write a map entry with a closure that writes the value.
-    /// This ensures values are always written for keys.
-    pub fn entry<F>(&mut self, key: &str, f: F) -> Result<()>
-    where
-        F: FnOnce(&mut Encoder) -> Result<()>,
-    {
-        self.parent.str(key)?;
-        f(self.parent)?;
-        self.count = self.count.checked_add(1)
-            .ok_or(Error::ContainerFull)?;
-        Ok(())
+    fn new(parent: &'a mut Encoder) -> Self {
+        Self { scope: PatchScope::new(parent) }
     }
 
-    /// Legacy API: Write a key and get a value encoder.
-    /// WARNING: You MUST call a method on the returned MapValueEncoder.
-    /// Dropping it without writing a value will panic.
-    #[deprecated(since = "0.1.0", note = "Use entry() instead for compile-time safety")]
+    #[must_use]
     pub fn key(&mut self, k: &str) -> Result<MapValueEncoder<'_>> {
-        self.parent.str(k)?;
-        self.count = self.count.checked_add(1)
-            .ok_or(Error::ContainerFull)?;
+        self.scope.parent.str(k)?;
         Ok(MapValueEncoder {
-            parent: &mut self.parent,
-            consumed: false,
+            parent: self.scope.parent,
         })
     }
 
+    pub fn entry<F>(&mut self, key: &str, f: F) -> Result<&mut Self>
+    where
+        F: FnOnce(MapValueEncoder<'_>) -> Result<()>,
+    {
+        let val_enc = self.key(key)?;
+        f(val_enc)?;
+        Ok(self)
+    }
+
     pub fn finish(self) -> &'a mut Encoder {
-        // Patch count before returning
-        let count_bytes = self.count.to_le_bytes();
-        self.parent.buf[self.start + 1] = count_bytes[0];
-        self.parent.buf[self.start + 2] = count_bytes[1];
-        let parent_ptr = self.parent as *mut Encoder;
-        std::mem::forget(self);
-        unsafe { &mut *parent_ptr }
+        self.scope.finish()
     }
 }
 
-impl<'a> Drop for MapEncoder<'a> {
-    fn drop(&mut self) {
-        // Patch count at start + 1
-        let count_bytes = self.count.to_le_bytes();
-        self.parent.buf[self.start + 1] = count_bytes[0];
-        self.parent.buf[self.start + 2] = count_bytes[1];
-    }
-}
-
-#[must_use = "map value must be provided by calling a value method"]
+#[must_use]
 pub struct MapValueEncoder<'a> {
-    pub parent: &'a mut Encoder,
-    pub consumed: bool,
+    parent: &'a mut Encoder,
 }
 
 impl<'a> MapValueEncoder<'a> {
-    pub fn bool(mut self, v: bool) {
-        self.parent.bool(v);
-        self.consumed = true;
-    }
-
-    pub fn u8(mut self, v: u8) {
-        self.parent.u8(v);
-        self.consumed = true;
-    }
-
-    pub fn i8(mut self, v: i8) {
-        self.parent.i8(v);
-        self.consumed = true;
-    }
-
-    pub fn u16(mut self, v: u16) {
-        self.parent.u16(v);
-        self.consumed = true;
-    }
-
-    pub fn i16(mut self, v: i16) {
-        self.parent.i16(v);
-        self.consumed = true;
-    }
-
-    pub fn u32(mut self, v: u32) {
-        self.parent.u32(v);
-        self.consumed = true;
-    }
-
-    pub fn i32(mut self, v: i32) {
-        self.parent.i32(v);
-        self.consumed = true;
-    }
-
-    pub fn u64(mut self, v: u64) {
-        self.parent.u64(v);
-        self.consumed = true;
-    }
-
-    pub fn i64(mut self, v: i64) {
-        self.parent.i64(v);
-        self.consumed = true;
-    }
-
-    pub fn f32(mut self, v: f32) {
-        self.parent.f32(v);
-        self.consumed = true;
-    }
-
-    pub fn f64(mut self, v: f64) {
-        self.parent.f64(v);
-        self.consumed = true;
-    }
-
-    pub fn str(mut self, v: &str) -> Result<()> {
-        self.parent.str(v)?;
-        self.consumed = true;
-        Ok(())
-    }
-
-    pub fn bytes(mut self, v: &[u8]) -> Result<()> {
-        self.parent.bytes(v)?;
-        self.consumed = true;
-        Ok(())
-    }
-
-    pub fn struct_blob(mut self, v: &[u8]) -> Result<()> {
-        self.parent.struct_blob(v)?;
-        self.consumed = true;
-        Ok(())
-    }
-
-    pub fn list(self) -> ListEncoder<'a> {
-        let parent_ptr = self.parent as *mut Encoder;
-        self.consumed = true;
-        unsafe { &mut *parent_ptr }.list()
-    }
-
-    pub fn map(self) -> MapEncoder<'a> {
-        let parent_ptr = self.parent as *mut Encoder;
-        self.consumed = true;
-        unsafe { &mut *parent_ptr }.map()
-    }
-
-    pub fn array(self, item_tag: Tag, stride: usize) -> Result<ArrayEncoder<'a>> {
-        let parent_ptr = self.parent as *mut Encoder;
-        self.consumed = true;
-        unsafe { &mut *parent_ptr }.array(item_tag, stride)
-    }
+    encode_wrapper_api!([self], (), 'a;
+        parent: self.parent;
+        pre: {};
+        post: ()
+    );
 }
 
-impl<'a> Drop for MapValueEncoder<'a> {
-    fn drop(&mut self) {
-        // If value was never written (mem::forget not called), this is a programmer error
-        if !self.consumed {
-            panic!("MapValueEncoder dropped without writing a value - this violates the API contract that every key must have a value");
-        }
+pub struct RecordEncoder<'a> {
+    scope: PatchScope<'a>,
+}
+
+impl<'a> RecordEncoder<'a> {
+    pub fn push(&mut self, data: &[u8]) -> Result<&mut Self> {
+        self.scope.parent.buf.extend_from_slice(data);
+        Ok(self)
+    }
+
+    #[inline]
+    pub fn bool(&mut self, v: bool) -> Result<&mut Self> {
+        self.scope.parent.write_tag(Tag::Bool);
+        self.scope.parent.buf.push(v as u8);
+        Ok(self)
+    }
+
+    #[inline]
+    pub fn u8(&mut self, v: u8) -> Result<&mut Self> {
+        self.scope.parent.write_tag(Tag::U8);
+        self.scope.parent.buf.push(v);
+        Ok(self)
+    }
+
+    #[inline]
+    pub fn i8(&mut self, v: i8) -> Result<&mut Self> {
+        self.scope.parent.write_tag(Tag::S8);
+        self.scope.parent.buf.push(v as u8);
+        Ok(self)
+    }
+
+    for_each_multibyte_scalar!(encode_record_multibyte, ());
+
+    pub fn finish(self) -> &'a mut Encoder {
+        self.scope.finish()
     }
 }
 
 pub struct ArrayEncoder<'a> {
-    pub parent: &'a mut Encoder,
-    pub start: usize,
-    pub stride: usize,
-    pub count: u16,
+    scope: PatchScope<'a>,
+    stride: usize,
 }
 
 impl<'a> ArrayEncoder<'a> {
+    pub unsafe fn push_unchecked(&mut self, data: &[u8]) -> Result<()> {
+        self.scope.parent.buf.extend_from_slice(data);
+        Ok(())
+    }
+
     pub fn push(&mut self, data: &[u8]) -> Result<()> {
         if data.len() != self.stride {
             return Err(Error::Malformed);
         }
-        self.count = self.count.checked_add(1)
-            .ok_or(Error::ContainerFull)?;
-        self.parent.buf.extend_from_slice(data);
+        unsafe { self.push_unchecked(data) }
+    }
+
+    #[inline]
+    pub fn bool(&mut self, v: bool) -> Result<()> {
+        self.scope.parent.write_tag(Tag::Bool);
+        self.scope.parent.buf.push(v as u8);
         Ok(())
     }
 
+    #[inline]
+    pub fn u8(&mut self, v: u8) -> Result<()> {
+        self.scope.parent.write_tag(Tag::U8);
+        self.scope.parent.buf.push(v);
+        Ok(())
+    }
+
+    #[inline]
+    pub fn i8(&mut self, v: i8) -> Result<()> {
+        self.scope.parent.write_tag(Tag::S8);
+        self.scope.parent.buf.push(v as u8);
+        Ok(())
+    }
+
+    for_each_multibyte_scalar!(encode_array_multibyte, ());
+
+    /// Starts writing a fixed-size record into the array.
+    pub fn fixed_record(&mut self) -> FixedRecordEncoder<'_, 'a> {
+        let start = self.scope.parent.buf.len();
+        FixedRecordEncoder {
+            parent: self,
+            start,
+        }
+    }
+
     pub fn finish(self) -> &'a mut Encoder {
-        // Patch count before returning
-        let count_bytes = self.count.to_le_bytes();
-        self.parent.buf[self.start + 4] = count_bytes[0];
-        self.parent.buf[self.start + 5] = count_bytes[1];
-        let parent_ptr = self.parent as *mut Encoder;
-        self.consumed = true;
-        unsafe { &mut *parent_ptr }
+        self.scope.finish()
     }
 }
 
-impl<'a> Drop for ArrayEncoder<'a> {
-    fn drop(&mut self) {
-        // Patch count at start + 1 (tag) + 1 (item_tag) + 2 (stride)
-        let count_bytes = self.count.to_le_bytes();
-        self.parent.buf[self.start + 4] = count_bytes[0];
-        self.parent.buf[self.start + 5] = count_bytes[1];
+pub struct FixedRecordEncoder<'p, 'a> {
+    parent: &'p mut ArrayEncoder<'a>,
+    start: usize,
+}
+
+impl<'p, 'a> FixedRecordEncoder<'p, 'a> {
+    pub fn push(&mut self, data: &[u8]) -> Result<&mut Self> {
+        // We bypass stride checks until finish
+        unsafe { self.parent.push_unchecked(data)?; }
+        Ok(self)
+    }
+
+    #[inline]
+    pub fn bool(&mut self, v: bool) -> Result<&mut Self> {
+        self.parent.scope.parent.write_tag(Tag::Bool);
+        self.parent.scope.parent.buf.push(v as u8);
+        Ok(self)
+    }
+
+    #[inline]
+    pub fn u8(&mut self, v: u8) -> Result<&mut Self> {
+        self.parent.scope.parent.write_tag(Tag::U8);
+        self.parent.scope.parent.buf.push(v);
+        Ok(self)
+    }
+
+    #[inline]
+    pub fn i8(&mut self, v: i8) -> Result<&mut Self> {
+        self.parent.scope.parent.write_tag(Tag::S8);
+        self.parent.scope.parent.buf.push(v as u8);
+        Ok(self)
+    }
+
+    for_each_multibyte_scalar!(encode_record_multibyte, ());
+
+    pub fn finish(self) -> Result<&'p mut ArrayEncoder<'a>> 
+    where
+        'a: 'p,
+    {
+        let end = self.parent.scope.parent.buf.len();
+        let written = end - self.start;
+        if written != self.parent.stride {
+            return Err(Error::Malformed);
+        }
+        Ok(self.parent)
     }
 }
