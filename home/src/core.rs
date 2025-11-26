@@ -6,7 +6,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
 
-const INFO_CORE: &'static str = "core.info";
+use crate::neopack;
+use crate::neopack::Decoder;
+use crate::neopack::Encoder;
+
+const INFO_CORE: &'static str = "info.npk";
 
 #[derive(Debug)]
 pub enum CoreError {
@@ -15,10 +19,25 @@ pub enum CoreError {
     CoreFull,
     FutureMessage,
     Io(std::io::Error),
-    CoreInfoInvalid(std::num::ParseIntError),
+    Neopack(neopack::Error),
+    BadInfoVersion(u8),
+    BadInfoSchema,
 }
 
-#[derive(Debug, Clone)]pub struct Message(Range<usize>);
+impl From<std::io::Error> for CoreError {
+    fn from(err: std::io::Error) -> Self {
+        CoreError::Io(err)
+    }
+}
+
+impl From<neopack::Error> for CoreError {
+    fn from(err: neopack::Error) -> Self {
+        CoreError::Neopack(err)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Message(Range<usize>);
 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -68,15 +87,43 @@ impl Core {
 
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, CoreError>  {
         let path = path.as_ref();
-        let core_info = path.join(INFO_CORE);
-        let size = std::fs::read_to_string(core_info).map_err(|e| CoreError::Io(e))?;
-        let size = u16::from_str_radix(&size.trim(), 10).map_err(|e| CoreError::CoreInfoInvalid(e))?;
+        let size = Self::read_size(path)?;
 
         let mut core = Self::create(path.to_path_buf());
         let start_id = MessageId(size);
         core.begin_flush = start_id;
         core.next_id = start_id;
         return Ok(core);
+    }
+
+    fn read_size(path: &Path) -> Result<u16, CoreError> {
+        let core_info = path.join(INFO_CORE);
+        let bytes = std::fs::read(core_info)?;
+
+        let mut reader = Decoder::new(&bytes);
+        let mut map = reader.map()?;
+        let Some(("version", version)) = map.next()? else { return Err(CoreError::BadInfoSchema) };
+        let version = version.as_u8()?;
+        if 0xFF != version { return Err(CoreError::BadInfoVersion(version)) };
+        let Some(("size", size)) = map.next()? else { return Err(CoreError::BadInfoSchema) };
+        let size = size.as_u16()?;
+        if !map.next()?.is_none() { return Err(CoreError::BadInfoSchema) };
+
+        Ok(size)
+    }
+
+    fn write_size(size: u16, path: &Path) -> Result<(), CoreError> {
+        let mut core_info = std::fs::File::create(path.join(INFO_CORE))?;
+
+        let mut encoder = Encoder::new();
+        let mut map = encoder.map()?;
+        map.key("version")?.u8(0xFF)?;
+        map.key("size")?.u16(size)?;
+        map.finish()?;
+
+        let buf = encoder.as_bytes();
+        core_info.write_all(buf)?;
+        Ok(())
     }
 
     pub fn flush(&mut self) -> Result<(), CoreError> {
@@ -88,19 +135,14 @@ impl Core {
         // Flush out all messages
         for (id, message) in self.messages.range(start_id..) {
             let name = id.to_file_name();
-            let mut file = std::fs::File::create(path.join(name))
-                .map_err(|e| CoreError::Io(e))?;
-            file.write_all(&self.cache[message.0.clone()])
-                .map_err(|e| CoreError::Io(e))?;
+            let mut file = std::fs::File::create(path.join(name))?;
+            file.write_all(&self.cache[message.0.clone()])?;
         }
 
         let size = self.next_id.0;
-        let mut core_info = std::fs::File::create(path.join(INFO_CORE))
-            .map_err(|e| CoreError::Io(e))?;
-        core_info.write_all(size.to_string().as_bytes())
-            .map_err(|e| CoreError::Io(e))?;
-        self.begin_flush = self.next_id;
+        Self::write_size(size, path)?;
 
+        self.begin_flush = self.next_id;
         Ok(())
     }
 
@@ -134,8 +176,7 @@ impl Core {
         let Some(ref path) = self.path else { return Ok(()) };
 
         let name = id.to_file_name();
-        let contents = std::fs::read(path.join(name))
-            .map_err(|e| CoreError::Io(e))?;
+        let contents = std::fs::read(path.join(name))?;
         self.cache_message(id, &contents)?;
         Ok(())
     }

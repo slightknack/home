@@ -198,7 +198,7 @@ macro_rules! decode_val_as {
     ($name:ident, $as_name:ident, $ty:ty, $_tag:expr, $var:ident, $_ctx:tt) => {
         pub fn $as_name(&self) -> crate::neopack::types::Result<$ty> {
             match self {
-                ValueReader::$var(v) => Ok(*v),
+                ValueDecoder::$var(v) => Ok(*v),
                 _ => Err(crate::neopack::types::Error::TypeMismatch),
             }
         }

@@ -15,12 +15,12 @@ pub use encoder::ArrayEncoder;
 pub use encoder::RecordEncoder;
 pub use encoder::RecordBodyEncoder;
 
-pub use decoder::ValueReader;
-pub use decoder::Reader;
-pub use decoder::ListIter;
-pub use decoder::MapIter;
-pub use decoder::ArrayIter;
-pub use decoder::RecordReader;
+pub use decoder::Decoder;
+pub use decoder::ListDecoder;
+pub use decoder::MapDecoder;
+pub use decoder::ArrayDecoder;
+pub use decoder::RecordDecoder;
+pub use decoder::ValueDecoder;
 
 #[cfg(test)]
 mod tests;

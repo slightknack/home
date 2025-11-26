@@ -32,12 +32,12 @@ impl_from_bytes!(u64, 8); impl_from_bytes!(i64, 8);
 impl_from_bytes!(f32, 4); impl_from_bytes!(f64, 8);
 
 #[derive(Debug, Clone)]
-pub struct Reader<'a> {
+pub struct Decoder<'a> {
     pub buf: &'a [u8],
     pub pos: usize,
 }
 
-impl<'a> Reader<'a> {
+impl<'a> Decoder<'a> {
     pub fn new(buf: &'a [u8]) -> Self {
         Self { buf, pos: 0 }
     }
@@ -119,8 +119,8 @@ impl<'a> Reader<'a> {
         f(bytes)
     }
 
-    pub fn value(&mut self) -> Result<ValueReader<'a>> {
-        ValueReader::read(self)
+    pub fn value(&mut self) -> Result<ValueDecoder<'a>> {
+        ValueDecoder::read(self)
     }
 
     pub fn skip_value(&mut self) -> Result<()> {
@@ -139,7 +139,7 @@ impl<'a> Reader<'a> {
         }
     }
 
-    pub fn list(&mut self) -> Result<ListIter<'a>> {
+    pub fn list(&mut self) -> Result<ListDecoder<'a>> {
         let tag = self.read_tag()?;
         if tag != Tag::List {
             return Err(Error::TypeMismatch);
@@ -147,13 +147,13 @@ impl<'a> Reader<'a> {
         let byte_len: u32 = self.read_primitive()?;
         let bytes = self.read_bytes(byte_len as usize)?;
 
-        Ok(ListIter {
-            reader: Reader::new(bytes),
+        Ok(ListDecoder {
+            reader: Decoder::new(bytes),
             end_pos: bytes.len(),
         })
     }
 
-    pub fn map(&mut self) -> Result<MapIter<'a>> {
+    pub fn map(&mut self) -> Result<MapDecoder<'a>> {
         let tag = self.read_tag()?;
         if tag != Tag::Map {
             return Err(Error::TypeMismatch);
@@ -161,13 +161,13 @@ impl<'a> Reader<'a> {
         let byte_len: u32 = self.read_primitive()?;
         let bytes = self.read_bytes(byte_len as usize)?;
 
-        Ok(MapIter {
-            reader: Reader::new(bytes),
+        Ok(MapDecoder {
+            reader: Decoder::new(bytes),
             end_pos: bytes.len(),
         })
     }
 
-    pub fn array(&mut self) -> Result<ArrayIter<'a>> {
+    pub fn array(&mut self) -> Result<ArrayDecoder<'a>> {
         let tag = self.read_tag()?;
         if tag != Tag::Array {
             return Err(Error::TypeMismatch);
@@ -176,7 +176,7 @@ impl<'a> Reader<'a> {
         let bytes = self.read_bytes(byte_len as usize)?;
 
         // Array setup requires parsing the header from the payload
-        let mut inner = Reader::new(bytes);
+        let mut inner = Decoder::new(bytes);
         let item_tag = Tag::from_u8(inner.read_primitive()?).ok_or(Error::InvalidTag(0))?;
         let stride: u32 = inner.read_primitive()?;
 
@@ -186,7 +186,7 @@ impl<'a> Reader<'a> {
         if stride == 0 || payload_len % (stride as usize) != 0 { return Err(Error::Malformed); }
         let count = payload_len / (stride as usize);
 
-        Ok(ArrayIter {
+        Ok(ArrayDecoder {
             reader: inner, // pos is now after header
             item_tag,
             stride: stride as usize,
@@ -194,35 +194,35 @@ impl<'a> Reader<'a> {
         })
     }
 
-    pub fn record(&mut self) -> Result<RecordReader<'a>> {
+    pub fn record(&mut self) -> Result<RecordDecoder<'a>> {
         let bytes = self.record_blob()?;
-        Ok(RecordReader::new(bytes))
+        Ok(RecordDecoder::new(bytes))
     }
 }
 
 #[derive(Debug)]
-pub struct ListIter<'a> {
-    reader: Reader<'a>,
+pub struct ListDecoder<'a> {
+    reader: Decoder<'a>,
     end_pos: usize,
 }
 
-impl<'a> ListIter<'a> {
-    pub fn next(&mut self) -> Result<Option<ValueReader<'a>>> {
+impl<'a> ListDecoder<'a> {
+    pub fn next(&mut self) -> Result<Option<ValueDecoder<'a>>> {
         if self.reader.pos >= self.end_pos {
             return Ok(None);
         }
-        ValueReader::read(&mut self.reader).map(Some)
+        ValueDecoder::read(&mut self.reader).map(Some)
     }
 }
 
 #[derive(Debug)]
-pub struct MapIter<'a> {
-    reader: Reader<'a>,
+pub struct MapDecoder<'a> {
+    reader: Decoder<'a>,
     end_pos: usize,
 }
 
-impl<'a> MapIter<'a> {
-    pub fn next(&mut self) -> Result<Option<(&'a str, ValueReader<'a>)>> {
+impl<'a> MapDecoder<'a> {
+    pub fn next(&mut self) -> Result<Option<(&'a str, ValueDecoder<'a>)>> {
         if self.reader.pos >= self.end_pos {
             return Ok(None);
         }
@@ -233,30 +233,30 @@ impl<'a> MapIter<'a> {
         let k_bytes = self.reader.read_bytes(k_len as usize)?;
         let key = std::str::from_utf8(k_bytes).map_err(|_| Error::InvalidUtf8)?;
 
-        let val = ValueReader::read(&mut self.reader)?;
+        let val = ValueDecoder::read(&mut self.reader)?;
         Ok(Some((key, val)))
     }
 }
 
 #[derive(Debug)]
-pub struct ArrayIter<'a> {
-    reader: Reader<'a>,
+pub struct ArrayDecoder<'a> {
+    reader: Decoder<'a>,
     item_tag: Tag,
     stride: usize,
     remaining: usize,
 }
 
-impl<'a> ArrayIter<'a> {
+impl<'a> ArrayDecoder<'a> {
     pub fn item_tag(&self) -> Tag { self.item_tag }
     pub fn stride(&self) -> usize { self.stride }
     pub fn remaining(&self) -> usize { self.remaining }
 
-    pub fn next(&mut self) -> Result<Option<ValueReader<'a>>> {
+    pub fn next(&mut self) -> Result<Option<ValueDecoder<'a>>> {
         if self.remaining == 0 { return Ok(None); }
         self.remaining -= 1;
 
         let bytes = self.reader.read_bytes(self.stride)?;
-        let value = ValueReader::from_untagged_bytes(self.item_tag, bytes)?;
+        let value = ValueDecoder::from_untagged_bytes(self.item_tag, bytes)?;
 
         Ok(Some(value))
     }
@@ -274,7 +274,7 @@ impl<'a> ArrayIter<'a> {
 }
 
 #[derive(Debug)]
-pub enum ValueReader<'a> {
+pub enum ValueDecoder<'a> {
     // Fixed-size values (can appear in arrays)
     Bool(bool),
     U8(u8),
@@ -292,53 +292,53 @@ pub enum ValueReader<'a> {
 
     /// Variable-size values (cannot appear in arrays)
     String(&'a str),
-    List(ListIter<'a>),
-    Map(MapIter<'a>),
-    Array(ArrayIter<'a>),
+    List(ListDecoder<'a>),
+    Map(MapDecoder<'a>),
+    Array(ArrayDecoder<'a>),
 }
 
-impl<'a> ValueReader<'a> {
+impl<'a> ValueDecoder<'a> {
     /// Decodes a value from a raw slice of bytes, assuming the given Tag.
     /// This is used for Array items (where stride is known) and by the main
     /// `read` method (once it determines length).
     pub fn from_untagged_bytes(tag: Tag, bytes: &'a [u8]) -> Result<Self> {
         match tag {
-            Tag::Bool => Ok(ValueReader::Bool(FromBytes::read_from(bytes))),
-            Tag::U8   => Ok(ValueReader::U8(FromBytes::read_from(bytes))),
-            Tag::S8   => Ok(ValueReader::S8(FromBytes::read_from(bytes))),
-            Tag::U16  => Ok(ValueReader::U16(FromBytes::read_from(bytes))),
-            Tag::S16  => Ok(ValueReader::S16(FromBytes::read_from(bytes))),
-            Tag::U32  => Ok(ValueReader::U32(FromBytes::read_from(bytes))),
-            Tag::S32  => Ok(ValueReader::S32(FromBytes::read_from(bytes))),
-            Tag::U64  => Ok(ValueReader::U64(FromBytes::read_from(bytes))),
-            Tag::S64  => Ok(ValueReader::S64(FromBytes::read_from(bytes))),
-            Tag::F32  => Ok(ValueReader::F32(FromBytes::read_from(bytes))),
-            Tag::F64  => Ok(ValueReader::F64(FromBytes::read_from(bytes))),
+            Tag::Bool => Ok(ValueDecoder::Bool(FromBytes::read_from(bytes))),
+            Tag::U8   => Ok(ValueDecoder::U8(FromBytes::read_from(bytes))),
+            Tag::S8   => Ok(ValueDecoder::S8(FromBytes::read_from(bytes))),
+            Tag::U16  => Ok(ValueDecoder::U16(FromBytes::read_from(bytes))),
+            Tag::S16  => Ok(ValueDecoder::S16(FromBytes::read_from(bytes))),
+            Tag::U32  => Ok(ValueDecoder::U32(FromBytes::read_from(bytes))),
+            Tag::S32  => Ok(ValueDecoder::S32(FromBytes::read_from(bytes))),
+            Tag::U64  => Ok(ValueDecoder::U64(FromBytes::read_from(bytes))),
+            Tag::S64  => Ok(ValueDecoder::S64(FromBytes::read_from(bytes))),
+            Tag::F32  => Ok(ValueDecoder::F32(FromBytes::read_from(bytes))),
+            Tag::F64  => Ok(ValueDecoder::F64(FromBytes::read_from(bytes))),
 
-            Tag::Bytes => Ok(ValueReader::Bytes(bytes)),
-            Tag::Struct => Ok(ValueReader::Struct(bytes)),
+            Tag::Bytes => Ok(ValueDecoder::Bytes(bytes)),
+            Tag::Struct => Ok(ValueDecoder::Struct(bytes)),
 
             Tag::String => {
                 let s = std::str::from_utf8(bytes).map_err(|_| Error::InvalidUtf8)?;
-                Ok(ValueReader::String(s))
+                Ok(ValueDecoder::String(s))
             }
 
             Tag::List => {
-                Ok(ValueReader::List(ListIter {
-                    reader: Reader::new(bytes),
+                Ok(ValueDecoder::List(ListDecoder {
+                    reader: Decoder::new(bytes),
                     end_pos: bytes.len(),
                 }))
             }
 
             Tag::Map => {
-                Ok(ValueReader::Map(MapIter {
-                    reader: Reader::new(bytes),
+                Ok(ValueDecoder::Map(MapDecoder {
+                    reader: Decoder::new(bytes),
                     end_pos: bytes.len(),
                 }))
             }
 
             Tag::Array => {
-                let mut inner = Reader::new(bytes);
+                let mut inner = Decoder::new(bytes);
                 let item_tag = Tag::from_u8(inner.read_primitive()?).ok_or(Error::InvalidTag(0))?;
                 let stride: u32 = inner.read_primitive()?;
 
@@ -348,7 +348,7 @@ impl<'a> ValueReader<'a> {
                 if stride == 0 || payload_len % (stride as usize) != 0 { return Err(Error::Malformed); }
                 let count = payload_len / (stride as usize);
 
-                Ok(ValueReader::Array(ArrayIter {
+                Ok(ValueDecoder::Array(ArrayDecoder {
                     reader: inner,
                     item_tag,
                     stride: stride as usize,
@@ -358,7 +358,7 @@ impl<'a> ValueReader<'a> {
         }
     }
 
-    pub fn read(r: &mut Reader<'a>) -> Result<Self> {
+    pub fn read(r: &mut Decoder<'a>) -> Result<Self> {
         let tag = r.read_tag()?;
 
         // Determine size of the payload
@@ -381,25 +381,25 @@ impl<'a> ValueReader<'a> {
     for_each_scalar!(decode_val_as, ());
 
     pub fn as_str(&self) -> Result<&'a str> {
-        match self { ValueReader::String(v) => Ok(*v), _ => Err(Error::TypeMismatch) }
+        match self { ValueDecoder::String(v) => Ok(*v), _ => Err(Error::TypeMismatch) }
     }
 
     pub fn as_bytes(&self) -> Result<&'a [u8]> {
-        match self { ValueReader::Bytes(v) => Ok(*v), _ => Err(Error::TypeMismatch) }
+        match self { ValueDecoder::Bytes(v) => Ok(*v), _ => Err(Error::TypeMismatch) }
     }
 }
 
-pub struct RecordReader<'a> {
-    inner: Reader<'a>,
+pub struct RecordDecoder<'a> {
+    inner: Decoder<'a>,
     end: usize,
     validate: bool,
 }
 
-impl<'a> RecordReader<'a> {
+impl<'a> RecordDecoder<'a> {
     pub fn new(data: &'a [u8]) -> Self {
         Self {
             end: data.len(),
-            inner: Reader::new(data),
+            inner: Decoder::new(data),
             validate: true
         }
     }
@@ -407,7 +407,7 @@ impl<'a> RecordReader<'a> {
     pub fn new_unchecked(data: &'a [u8]) -> Self {
         Self {
             end: data.len(),
-            inner: Reader::new(data),
+            inner: Decoder::new(data),
             validate: false
         }
     }
@@ -432,7 +432,7 @@ impl<'a> RecordReader<'a> {
     }
 }
 
-impl<'a> Drop for RecordReader<'a> {
+impl<'a> Drop for RecordDecoder<'a> {
     fn drop(&mut self) {
         if self.validate && self.inner.pos != self.end {
             debug_assert!(false, "RecordReader dropped with unread bytes");
