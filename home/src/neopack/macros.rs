@@ -167,7 +167,7 @@ macro_rules! decode_expect_tag {
 macro_rules! decode_record_prim {
     ($name:ident, $as_name:ident, $ty:ty, $_tag:expr, $var:ident, $_ctx:tt) => {
         pub fn $name(&mut self) -> crate::neopack::types::Result<$ty> {
-            self.inner.read_primitive::<$ty>()
+            self.read_primitive::<$ty>()
         }
     };
 }
@@ -187,7 +187,7 @@ macro_rules! decode_array_method {
             }
 
             self.remaining -= 1;
-            let bytes = self.reader.read_bytes(self.stride)?;
+            let bytes = self.cursor.read_bytes(self.stride)?;
             Ok(Some(<$ty as FromBytes>::read_from(bytes)))
         }
     };

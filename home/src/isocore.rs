@@ -28,16 +28,19 @@ use crate::covering::coverings_for_item;
 use crate::covering::ItemId;
 use crate::covering::CoveringId;
 use crate::covering::get_peaks;
+use crate::neopack::Encoder;
+use crate::neopack::Decoder;
 
 const WIDTH: u64 = 8;
-const INFO_ISOCORE: &'static str = "isocore.info";
-const DIR_DATA: &'static str = "data";
-const DIR_VERKLE: &'static str = "verkle";
-const DIR_SIG: &'static str = "sig";
+const INFO_ISOCORE: &'static str = "info.nd";
+const FILE_DATA: &'static str = "data.nd";
+const FILE_VERKLE: &'static str = "verkle.nd";
+const FILE_SIG: &'static str = "sig.nd";
 
 #[derive(Debug)]
 pub enum IsoCoreError {
     Core(CoreError),
+    Neopack(crate::neopack::Error),
     Utf8,
     NodeFormat,
     NodeType,
@@ -51,6 +54,18 @@ pub enum IsoCoreError {
 impl From<CoreError> for IsoCoreError {
     fn from(e: CoreError) -> Self {
         return IsoCoreError::Core(e);
+    }
+}
+
+impl From<std::io::Error> for IsoCoreError {
+    fn from(e: std::io::Error) -> Self {
+        return IsoCoreError::Io(e);
+    }
+}
+
+impl From<crate::neopack::Error> for IsoCoreError {
+    fn from(e: crate::neopack::Error) -> Self {
+        return IsoCoreError::Neopack(e);
     }
 }
 
@@ -157,41 +172,62 @@ impl IsoCore {
     }
 
     pub fn create(path: PathBuf, signer: &KeyPair) -> Result<Self, IsoCoreError> {
-        let data_path = path.join(DIR_DATA);
-        let verkle_path = path.join(DIR_VERKLE);
-        let sig_path = path.join(DIR_SIG);
+        // Create directory
+        std::fs::create_dir_all(&path)?;
         
-        // Write isocore.info with public key
+        let data_path = path.join(FILE_DATA);
+        let verkle_path = path.join(FILE_VERKLE);
+        let sig_path = path.join(FILE_SIG);
+        
+        // Write info.nd with public key as neopack
         let info_path = path.join(INFO_ISOCORE);
-        let mut file = std::fs::File::create(info_path)
-            .map_err(|e| IsoCoreError::Io(e))?;
-        file.write_all(&signer.key_pub.0)
-            .map_err(|e| IsoCoreError::Io(e))?;
+        let mut enc = Encoder::new();
+        let mut map = enc.map()?;
+        map.key("version")?.u8(0x01)?;
+        map.key("signer")?.bytes(&signer.key_pub.0)?;
+        map.finish()?;
+        
+        let mut file = std::fs::File::create(info_path)?;
+        file.write_all(enc.as_bytes())?;
 
         return Ok(Self {
             path: Some(path),
             signer: signer.key_pub.clone(),
-            data_core: Core::create(data_path),
-            verkle_core: Core::create(verkle_path),
-            sig_core: Core::create(sig_path),
+            data_core: Core::create(data_path)?,
+            verkle_core: Core::create(verkle_path)?,
+            sig_core: Core::create(sig_path)?,
         });
     }
 
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, IsoCoreError> {
         let path = path.as_ref();
-        let data_path = path.join(DIR_DATA);
-        let verkle_path = path.join(DIR_VERKLE);
-        let sig_path = path.join(DIR_SIG);
+        let data_path = path.join(FILE_DATA);
+        let verkle_path = path.join(FILE_VERKLE);
+        let sig_path = path.join(FILE_SIG);
         
-        // Read isocore.info to get public key
+        // Read info.nd to get public key
         let info_path = path.join(INFO_ISOCORE);
-        let pubkey_bytes = std::fs::read(info_path)
-            .map_err(|e| IsoCoreError::Io(e))?;
-        if pubkey_bytes.len() != 32 {
+        let info_bytes = std::fs::read(info_path)?;
+        
+        let mut dec = Decoder::new(&info_bytes);
+        let mut map = dec.map()?;
+        
+        let Some(("version", version)) = map.next()? else {
+            return Err(IsoCoreError::NodeFormat);
+        };
+        let _version = version.as_u8()?;
+        
+        let Some(("signer", signer_val)) = map.next()? else {
+            return Err(IsoCoreError::NodeFormat);
+        };
+        let signer_bytes = signer_val.as_bytes()?;
+        
+        if signer_bytes.len() != 32 {
             return Err(IsoCoreError::NodeFormat);
         }
+        
         let mut pubkey_array = [0u8; 32];
-        pubkey_array.copy_from_slice(&pubkey_bytes);
+        pubkey_array.copy_from_slice(signer_bytes);
 
         return Ok(Self {
             path: Some(path.to_path_buf()),

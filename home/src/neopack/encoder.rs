@@ -13,15 +13,25 @@ use super::macros::encode_root_multibyte;
 /// A growable buffer that encodes data into the NeoPack format.
 pub struct Encoder {
     pub buf: Vec<u8>,
+    last_flush: usize,
+    open_scopes: usize,
 }
 
 impl Encoder {
     pub fn new() -> Self {
-        Self { buf: Vec::new() }
+        Self { 
+            buf: Vec::new(),
+            last_flush: 0,
+            open_scopes: 0,
+        }
     }
 
     pub fn with_capacity(cap: usize) -> Self {
-        Self { buf: Vec::with_capacity(cap) }
+        Self { 
+            buf: Vec::with_capacity(cap),
+            last_flush: 0,
+            open_scopes: 0,
+        }
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -30,6 +40,45 @@ impl Encoder {
 
     pub fn into_bytes(self) -> Vec<u8> {
         self.buf
+    }
+
+    /// Flush all bytes written since the last flush
+    /// Returns a slice of the newly flushed bytes
+    /// Can only flush when all containers are closed
+    pub fn flush(&mut self) -> Result<&[u8]> {
+        if self.open_scopes > 0 {
+            return Err(Error::ScopeOpen);
+        }
+        let slice = &self.buf[self.last_flush..];
+        self.last_flush = self.buf.len();
+        Ok(slice)
+    }
+
+    /// Take ownership of all flushed bytes and compact the buffer
+    /// This removes flushed bytes from the buffer to free memory
+    pub fn take_flushed(&mut self) -> Vec<u8> {
+        let taken = self.buf[..self.last_flush].to_vec();
+        self.buf.drain(..self.last_flush);
+        self.last_flush = 0;
+        taken
+    }
+
+    /// Create an encoder from existing bytes
+    /// Validates that bytes contain complete neopack messages
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        use crate::neopack::Decoder;
+        
+        // Validate by parsing
+        let mut decoder = Decoder::new(&bytes);
+        while decoder.remaining() > 0 {
+            decoder.skip_value()?;
+        }
+        
+        Ok(Self {
+            buf: bytes,
+            last_flush: 0,
+            open_scopes: 0,
+        })
     }
 
     #[inline(always)]
@@ -160,10 +209,12 @@ impl<'a> PatchScope<'a> {
         let len_offset = parent.buf.len();
         parent.buf.extend_from_slice(&[0; 4]);
         let body_start_offset = parent.buf.len();
+        parent.open_scopes += 1;
         Self { parent, len_offset, body_start_offset }
     }
 
     fn manual(parent: &'a mut Encoder, len_offset: usize, body_start_offset: usize) -> Self {
+        parent.open_scopes += 1;
         Self { parent, len_offset, body_start_offset }
     }
 
@@ -188,9 +239,17 @@ impl<'a> PatchScope<'a> {
 
     fn finish(mut self) -> Result<&'a mut Encoder> {
         self.flush()?;
+        self.parent.open_scopes -= 1;
         let parent_ptr = self.parent as *mut Encoder;
         mem::forget(self);
         Ok(unsafe { &mut *parent_ptr })
+    }
+}
+
+impl<'a> Drop for PatchScope<'a> {
+    fn drop(&mut self) {
+        let _ = self.flush();
+        self.parent.open_scopes -= 1;
     }
 }
 
