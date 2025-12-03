@@ -1,5 +1,6 @@
 // pub mod isopack;
 pub mod neopack;
+pub mod jumpheader;
 pub mod neodisk;
 pub mod core;
 pub mod key;

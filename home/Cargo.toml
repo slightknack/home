@@ -16,3 +16,11 @@ memmap2 = "0.9"
 [[example]]
 name = "verify_compact"
 path = "examples/verify_compact.rs"
+
+[[example]]
+name = "streaming_example"
+path = "examples/streaming_example.rs"
+
+[[example]]
+name = "inspect_neodisk"
+path = "examples/inspect_neodisk.rs"

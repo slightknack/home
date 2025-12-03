@@ -313,7 +313,7 @@ impl IsoCore {
         return Ok(VerkleNode { children });
     }
 
-    fn get_root_hash(&mut self) -> Result<Hash, IsoCoreError> {
+    pub fn get_root_hash(&mut self) -> Result<Hash, IsoCoreError> {
         let len = self.len();
         if len.0 == 0 {
             return Ok(hash(&[]));
